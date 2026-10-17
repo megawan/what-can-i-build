@@ -13,6 +13,8 @@ Steps:
      that sql.js-httpvfs reads, so the browser fetches only the pages a query needs.
   4. Write match.bin.gz under --out: every set's part list packed by part and
      color, which the browser downloads once and matches against in memory.
+  5. Write parts.json.gz under --out: the parts used in two or more sets, with
+     category and picture, for finding a part from a description.
 """
 
 import argparse
@@ -33,6 +35,7 @@ TABLES = [
     "themes",
     "colors",
     "parts",
+    "part_categories",
     "part_relationships",
     "elements",
     "sets",
@@ -43,6 +46,7 @@ TABLES = [
 IMG_PREFIX = "https://cdn.rebrickable.com/media/"
 PAGE_SIZE = 4096
 CHUNK_SIZE = 10 * 1024 * 1024  # well under GitHub's 100 MB per-file limit
+CATALOG_MIN_SETS = 2  # parts in a single set are mostly one-off prints and stickers
 SAMPLE_SET = "10696-1"  # Medium Creative Brick Box, behind the "Try a sample" button
 COLOR_BITS = 14  # match.bin keys are pid << COLOR_BITS | (color_id + 1); -1 is "Unknown"
 
@@ -132,8 +136,9 @@ def build(staging: sqlite3.Connection, out_path: Path) -> None:
         CREATE TABLE themes (id INTEGER PRIMARY KEY, name TEXT NOT NULL, parent_id INTEGER);
         CREATE TABLE colors (id INTEGER PRIMARY KEY, name TEXT NOT NULL, rgb TEXT, is_trans INTEGER);
         -- pid is the canonical (mold-family root) part id; aliases point variants at it.
+        CREATE TABLE part_categories (id INTEGER PRIMARY KEY, name TEXT NOT NULL);
         CREATE TABLE parts (pid INTEGER PRIMARY KEY, part_num TEXT NOT NULL UNIQUE, name TEXT NOT NULL,
-                            in_sets INTEGER NOT NULL DEFAULT 0);
+                            in_sets INTEGER NOT NULL DEFAULT 0, cat_id INTEGER);
         CREATE TABLE part_aliases (part_num TEXT PRIMARY KEY, pid INTEGER NOT NULL) WITHOUT ROWID;
         CREATE TABLE elements (element_id TEXT PRIMARY KEY, pid INTEGER NOT NULL, color_id INTEGER NOT NULL)
             WITHOUT ROWID;
@@ -188,6 +193,11 @@ def build(staging: sqlite3.Connection, out_path: Path) -> None:
     # Every part is folded into the root of its mold family.
     roots = mold_roots(staging)
     names = dict(staging.execute("SELECT part_num, name FROM raw_parts"))
+    cats = {p: int(c) for p, c in staging.execute("SELECT part_num, part_cat_id FROM raw_parts") if c}
+    db.executemany(
+        "INSERT INTO part_categories VALUES (?, ?)",
+        ((int(i), n) for i, n in staging.execute("SELECT id, name FROM raw_part_categories")),
+    )
 
     def canon(p: str) -> str:
         return roots.get(p, p)
@@ -226,8 +236,8 @@ def build(staging: sqlite3.Connection, out_path: Path) -> None:
     order = sorted(all_canon, key=lambda p: (-in_sets.get(p, 0), p))
     pid_of = {p: i + 1 for i, p in enumerate(order)}
     db.executemany(
-        "INSERT INTO parts VALUES (?, ?, ?, ?)",
-        ((pid_of[p], p, names.get(p, p), in_sets.get(p, 0)) for p in order),
+        "INSERT INTO parts VALUES (?, ?, ?, ?, ?)",
+        ((pid_of[p], p, names.get(p, p), in_sets.get(p, 0), cats.get(p)) for p in order),
     )
     db.executemany(
         "INSERT INTO part_aliases VALUES (?, ?)",
@@ -372,6 +382,38 @@ def write_match(db_path: Path, out_dir: Path) -> None:
     print(f"wrote {out} ({len(keys):,} groups, {len(sids):,} entries, {out.stat().st_size / 1e6:.1f} MB)", flush=True)
 
 
+def write_catalog(db_path: Path, out_dir: Path) -> None:
+    """Write parts.json.gz, read by the part finder in web/app.js:
+    {built_at, categories: [[id, name], ...],
+     parts: [[pid, part_num, name, cat_id, in_sets, img], ...]}  (most-used first)
+    img is the picture of the part in the color it is most used in."""
+    db = sqlite3.connect(db_path)
+    built_at = db.execute("SELECT value FROM meta WHERE key = 'built_at'").fetchone()[0]
+    top_color = {}
+    for pid, color_id, n in db.execute("SELECT pid, color_id, count(*) FROM set_parts GROUP BY pid, color_id"):
+        if n > top_color.get(pid, (None, 0))[1]:
+            top_color[pid] = (color_id, n)
+    imgs = {}
+    for pid, color_id, img in db.execute("SELECT pid, color_id, img FROM part_imgs"):
+        if pid not in imgs or color_id == top_color.get(pid, (None,))[0]:
+            imgs[pid] = img
+    parts = [
+        [pid, part_num, name, cat_id, in_sets, imgs.get(pid)]
+        for pid, part_num, name, cat_id, in_sets in db.execute(
+            "SELECT pid, part_num, name, cat_id, in_sets FROM parts WHERE in_sets >= ? ORDER BY pid", (CATALOG_MIN_SETS,)
+        )
+    ]
+    catalog = {
+        "built_at": built_at,
+        "categories": db.execute("SELECT id, name FROM part_categories ORDER BY id").fetchall(),
+        "parts": parts,
+    }
+    db.close()
+    out = out_dir / "parts.json.gz"
+    out.write_bytes(gzip.compress(json.dumps(catalog, separators=(",", ":"), ensure_ascii=False).encode(), 9, mtime=0))
+    print(f"wrote {out} ({len(parts):,} parts, {out.stat().st_size / 1e6:.1f} MB)", flush=True)
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--raw", default="build/raw", type=Path, help="where to cache the downloaded CSVs")
@@ -395,6 +437,7 @@ def main() -> None:
     os.remove(staging_path)
     split(final_path, args.out)
     write_match(final_path, args.out)
+    write_catalog(final_path, args.out)
 
 
 if __name__ == "__main__":

@@ -35,6 +35,7 @@
           <label for="part-search">Part</label>
           <input id="part-search" type="search" placeholder="Name, part number (3001) or element ID" disabled>
           <ul class="suggestions" id="suggestions" role="listbox" hidden></ul>
+          <button type="button" class="link-btn" id="finder-btn" disabled>Don't know the part number or name? Describe it</button>
         </div>
         <div class="picked" id="picked" hidden>
           <img id="picked-img" alt="">
@@ -130,6 +131,24 @@
   <dialog id="set-dialog">
     <form method="dialog" class="dialog-close"><button aria-label="Close">×</button></form>
     <div id="set-detail"></div>
+  </dialog>
+
+  <dialog id="finder-dialog" aria-labelledby="finder-h">
+    <form method="dialog" class="dialog-close"><button aria-label="Close">×</button></form>
+    <h3 id="finder-h">Find a part by description</h3>
+    <p class="finder-help">Describe the piece in English or Indonesian: its shape, size, color and anything special about it.
+      For example <em>red flat 2x2 with hole</em>, <em>bata miring 2x1 biru</em> or <em>round plate with 4 studs</em>.
+      Count the size in studs, the bumps on top.</p>
+    <div class="finder-controls">
+      <input id="finder-text" type="search" placeholder="Describe the piece…" aria-label="Description">
+      <select id="finder-cat" aria-label="Category"><option value="">All categories</option></select>
+    </div>
+    <p class="finder-parsed" id="finder-parsed"></p>
+    <ul class="finder-grid" id="finder-grid"></ul>
+    <div class="more" id="finder-more-row" hidden>
+      <span id="finder-count"></span>
+      <button type="button" class="ghost" id="finder-more">Show more</button>
+    </div>
   </dialog>
 
   <footer class="wrap foot">

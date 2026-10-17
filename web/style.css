@@ -90,6 +90,21 @@ input:focus, select:focus, button:focus-visible { outline: 2px solid var(--accen
 .suggestions .meta { color: var(--muted); font-size: 12px; }
 .suggestions .set-thumb { width: 56px; height: 42px; object-fit: contain; flex: none; background: #fff; border-radius: 6px; }
 .thumb { width: 40px; height: 40px; object-fit: contain; flex: none; background: #fff; border-radius: 6px; }
+.link-btn { background: none; border: 0; padding: 4px 0 0; color: var(--muted); font-size: 12px; text-decoration: underline; }
+.link-btn:hover { color: var(--text); }
+.finder-help { color: var(--muted); font-size: 13px; margin: 4px 0 12px; }
+.finder-controls { display: flex; gap: 8px; }
+.finder-controls input { flex: 1; min-width: 0; }
+.finder-controls select { width: auto; max-width: 40%; }
+.finder-parsed { font-size: 13px; color: var(--muted); min-height: 1.4em; margin: 8px 0; }
+.finder-parsed b { color: var(--text); font-weight: 600; }
+.finder-grid { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px;
+  grid-template-columns: repeat(auto-fill, minmax(125px, 1fr)); }
+.finder-grid button { width: 100%; height: 100%; display: flex; flex-direction: column; gap: 4px; align-items: stretch; text-align: left;
+  background: transparent; color: var(--text); border: 1px solid var(--line); border-radius: 8px; padding: 8px; font-size: 13px; }
+.finder-grid button:hover { border-color: var(--muted); }
+.finder-grid img, .finder-grid .noimg { width: 100%; height: 90px; object-fit: contain; background: #fff; border-radius: 6px; }
+.finder-grid .meta { color: var(--muted); font-size: 12px; }
 .picked { display: flex; gap: 10px; align-items: center; }
 .picked img { width: 48px; height: 48px; object-fit: contain; background: #fff; border-radius: 6px; }
 .picked span { display: block; color: var(--muted); font-size: 13px; }
