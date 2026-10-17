@@ -8,6 +8,7 @@ const STORE_KEY = "wcib.collection.v1";
 // Resolved collection rows, valid only for the database build they came from.
 const RESOLVED_KEY = "wcib.resolved.v1";
 const FILTERS_KEY = "wcib.filters.v1";
+const PLAN_KEY = "wcib.plan.v1";
 const MAX_RESULTS = 60;
 
 const $ = (id) => document.getElementById(id);
@@ -57,8 +58,9 @@ async function init() {
     return;
   }
 
-  for (const id of ["part-search", "finder-btn", "set-search", "set-filter", "set-qty", "set-add-btn", "sample-btn", "export-btn", "clear-btn"]) $(id).disabled = false;
+  for (const id of ["part-search", "finder-btn", "set-search", "set-filter", "set-qty", "set-add-btn", "sample-btn", "export-btn", "clear-btn", "plan-suggest"]) $(id).disabled = false;
   restoreFilters();
+  try { planNums = JSON.parse(localStorage.getItem(PLAN_KEY) || "[]"); } catch {}
   await restore();
   renderPieces();
   await refreshResults();
@@ -143,13 +145,14 @@ function forEachColor(m, pid, fn) {
   for (let g = lowerBound(m.keys, matchKey(pid, -1)); g < m.keys.length && m.keys[g] < end; g++) fn(g, (m.keys[g] & 16383) - 1);
 }
 
-// For every set, how many of its pieces the collection covers. mode is
-// "exact" (part and color), "color" (all colors of a part pool together) or
-// "similar" (all colors of a whole family of similar parts pool together).
-function coverage(m, mode) {
+// For every set, how many of its pieces the given pieces (by default the whole
+// collection) cover. mode is "exact" (part and color), "color" (all colors of
+// a part pool together) or "similar" (all colors of a whole family of similar
+// parts pool together).
+function coverage(m, mode, items = [...collection.values()]) {
   const got = new Int32Array(m.sets.length + 1);
   if (mode === "exact") {
-    for (const p of collection.values()) {
+    for (const p of items) {
       const g = lowerBound(m.keys, matchKey(p.pid, p.color_id));
       if (m.keys[g] !== matchKey(p.pid, p.color_id)) continue;
       for (let e = m.starts[g]; e < m.starts[g + 1]; e++) got[m.sids[e]] += Math.min(m.qtys[e], p.qty);
@@ -158,7 +161,7 @@ function coverage(m, mode) {
   }
   const poolOf = (pid) => (mode === "similar" && m.familyOf.get(pid)) || pid;
   const have = new Map();
-  for (const p of collection.values()) have.set(poolOf(p.pid), (have.get(poolOf(p.pid)) || 0) + p.qty);
+  for (const p of items) have.set(poolOf(p.pid), (have.get(poolOf(p.pid)) || 0) + p.qty);
   const need = new Int32Array(m.sets.length + 1);
   const touched = [];
   for (const [pool, qty] of have) {
@@ -1023,26 +1026,38 @@ async function refreshResults() {
   }
   if (seq !== resultsSeq) return;
   const mode = matchMode();
-  const got = coverage(m, mode);
+  // With a build plan, sets are ranked on the pieces the plan leaves free.
+  const plan = computePlan(m, mode);
+  renderPlan(plan);
+  const planned = new Set(plan.entries.map((e) => e.set.sid));
+  const pool = plan.entries.length ? plan.left : undefined;
+  $("plan-note").hidden = !pool;
+  $("plan-note").textContent = pool ? `Ranked with the ${fmt(pool.reduce((n, p) => n + p.qty, 0))} pieces your build plan leaves free.` : "";
+  const got = coverage(m, mode, pool);
   // What other colors and similar parts would add, shown as a hint.
-  const flex = mode === "similar" ? got : coverage(m, "similar");
+  const flex = mode === "similar" ? got : coverage(m, "similar", pool);
   const f = readFilters();
   const rows = [];
   for (const s of m.sets) {
     const g = got[s.sid];
     // With search text, sets you have nothing for are listed too.
     const rank = text ? setTextRank(s, text) : 0;
-    if (rank < 0 || (!g && !text) || s.total < f.minSize) continue;
-    if (f.theme != null && s.root_theme !== f.theme) continue;
-    if ((f.yearFrom != null && s.year < f.yearFrom) || (f.yearTo != null && s.year > f.yearTo)) continue;
-    if (f.maxMissing != null && s.total - g > f.maxMissing) continue;
-    rows.push({ ...s, got: g, ratio: g / s.total, more: flex[s.sid] - g, rank });
+    if (rank < 0 || (!g && !text) || planned.has(s.sid) || !passesFilters(s, g, f)) continue;
+    rows.push({ ...s, got: g, ratio: g / s.total, more: flex[s.sid] - g, rank, pool,
+      poolNote: pool ? "Counting only the pieces your build plan leaves free." : "" });
   }
   rows.sort((a, b) => b.ratio - a.ratio || a.rank - b.rank || b.total - a.total);
   allResults = rows;
   lastResults = rows.slice(0, resultsLimit);
   renderResults();
   setStatus(`${fmt(totalSets)} sets checked in ${((performance.now() - t0) / 1000).toFixed(2)} s`);
+}
+
+function passesFilters(s, got, f) {
+  if (s.total < f.minSize) return false;
+  if (f.theme != null && s.root_theme !== f.theme) return false;
+  if ((f.yearFrom != null && s.year < f.yearFrom) || (f.yearTo != null && s.year > f.yearTo)) return false;
+  return f.maxMissing == null || s.total - got <= f.maxMissing;
 }
 
 function themeName(id) {
@@ -1077,7 +1092,8 @@ function renderResults() {
         <div class="sub">${fmt(r.got)} of ${fmt(r.total)} pieces${r.more > 0 ? ` <span class="hint">· +${fmt(r.more)} with ${moreWith}</span>` : ""}</div>
         <div class="bar"><span class="${pct >= 100 ? "full" : ""}" style="width:${Math.min(100, pct)}%"></span></div>
       </div>
-      <div class="pct">${pct}%</div></button></li>`;
+      <div class="pct">${pct}%</div></button>
+      <button type="button" class="plan-add" data-set="${esc(r.set_num)}" title="Add to build plan" aria-label="Add ${esc(r.name)} to build plan">+</button></li>`;
   }).join("");
 }
 
@@ -1095,7 +1111,8 @@ async function openSet(r) {
   // How many of each line the collection covers: exact matches first, then the
   // same part in other colors, then similar parts. The match mode decides which
   // of these count; the others are shown as substitutes you could use.
-  const items = [...collection.values()];
+  // Results ranked against a build plan carry the pieces the plan leaves free.
+  const items = r.pool ?? [...collection.values()];
   const pool = new Map(items.map((p) => [keyOf(p.pid, p.color_id), p.qty]));
   const familyOf = (pid) => m.familyOf.get(pid) ?? pid;
   const groupBy = (key) => {
@@ -1161,6 +1178,7 @@ async function openSet(r) {
       <div>
         <h3>${esc(r.name)}</h3>
         <div class="sub">${esc(r.set_num)} · ${r.year} · ${esc(themeName(r.theme_id))}</div>
+        ${r.poolNote ? `<div class="sub">${esc(r.poolNote)}</div>` : ""}
         <div class="sub">You have ${fmt(r.got)} of ${fmt(r.total)} pieces (${Math.floor(r.ratio * 1000) / 10}%)${missingCount ? ` · ${fmt(missingCount)} missing` : ""}${possible ? ` · <span class="hint">${fmt(possible)} could come from substitutes</span>` : ""}</div>
         <div class="links">
           <a href="https://www.lego.com/service/buildinginstructions/${encodeURIComponent(instr)}" target="_blank" rel="noopener">Instructions</a>
@@ -1169,6 +1187,7 @@ async function openSet(r) {
           ${missing.length ? `<a href="#" id="dl-missing">Download missing (CSV)</a>
             <button type="button" class="ghost" id="bl-wanted">BrickLink wanted list</button>` : ""}
           <button type="button" class="ghost" id="own-set">I own this set</button>
+          <button type="button" class="ghost" id="plan-toggle">${planNums.includes(r.set_num) ? "Remove from build plan" : "Add to build plan"}</button>
         </div>
       </div>
     </div>
@@ -1186,7 +1205,11 @@ async function openSet(r) {
     download(`${r.set_num}-missing.csv`, toCsv(missing.map((p) => [p.part_num, p.color_id, p.qty - p.have])));
   };
   const bl = $("bl-wanted");
-  if (bl) bl.onclick = () => showWantedList(missing, r);
+  if (bl) bl.onclick = () => showWantedList(missing, `For ${r.set_num} ${r.name}`, r.set_num, $("bl-panel"));
+  $("plan-toggle").onclick = () => {
+    $("set-dialog").close();
+    togglePlan(r.set_num);
+  };
 }
 
 // ---------- BrickLink wanted list ----------
@@ -1221,36 +1244,212 @@ ${it.color != null ? `    <COLOR>${it.color}</COLOR>\n` : ""}    <MINQTY>${it.qt
   return { xml: `<INVENTORY>\n${xml}\n</INVENTORY>\n`, count: items.size, unmapped };
 }
 
-async function showWantedList(missing, r) {
-  const panel = $("bl-panel");
+async function showWantedList(missing, remark, fileBase, panel) {
   panel.hidden = false;
   if ([...colors.values()].every((c) => c.bl_id == null)) {
     panel.innerHTML = `<p>This copy of the database has no BrickLink numbers, so a wanted list can't be made. Use the CSV instead.</p>`;
     return;
   }
   panel.innerHTML = `<p>Preparing the wanted list…</p>`;
-  const { xml, count, unmapped } = await wantedListXml(missing, `For ${r.set_num} ${r.name}`);
+  const { xml, count, unmapped } = await wantedListXml(missing, remark);
   const pieces = missing.reduce((n, p) => n + p.qty - p.have, 0);
   panel.innerHTML = `
-    <p><b>Wanted list ready:</b> ${fmt(count)} lots, ${fmt(pieces)} pieces.
+    <p><b>Wanted list ready:</b> ${fmt(count)} lot${count === 1 ? "" : "s"}, ${fmt(pieces)} piece${pieces === 1 ? "" : "s"}.
       ${unmapped.length ? `<span class="missing">${fmt(unmapped.length)} with no BrickLink number or color
         (${[...new Set(unmapped.map((p) => p.part_num))].slice(0, 5).map(esc).join(", ")}${new Set(unmapped.map((p) => p.part_num)).size > 5 ? ", …" : ""}); BrickLink will ask you to fix those.</span>` : ""}</p>
     <div class="links">
-      <button type="button" id="bl-copy">Copy XML</button>
-      <button type="button" class="ghost" id="bl-download">Download XML</button>
+      <button type="button" data-bl="copy">Copy XML</button>
+      <button type="button" class="ghost" data-bl="download">Download XML</button>
       <a href="https://www.bricklink.com/v2/wanted/upload.page" target="_blank" rel="noopener">Open BrickLink upload page</a>
     </div>
     <p class="finder-help">On BrickLink's upload page, paste the XML (or choose the downloaded file), pick the wanted list to add to, and upload.
       Then use the list to find shops that sell these pieces.</p>`;
-  $("bl-copy").onclick = async () => {
+  const copy = panel.querySelector('[data-bl="copy"]');
+  copy.onclick = async () => {
     try {
       await navigator.clipboard.writeText(xml);
-      $("bl-copy").textContent = "Copied";
+      copy.textContent = "Copied";
     } catch {
-      download(`${r.set_num}-wanted.xml`, xml, "application/xml");
+      download(`${fileBase}-wanted.xml`, xml, "application/xml");
     }
   };
-  $("bl-download").onclick = () => download(`${r.set_num}-wanted.xml`, xml, "application/xml");
+  panel.querySelector('[data-bl="download"]').onclick = () => download(`${fileBase}-wanted.xml`, xml, "application/xml");
+}
+
+// ---------- build plan ----------
+
+// Set numbers in plan order; pieces go to earlier sets first.
+let planNums = [];
+let lastPlan = { entries: [], left: [] };
+
+function savePlan() {
+  try { localStorage.setItem(PLAN_KEY, JSON.stringify(planNums)); } catch {}
+}
+
+function togglePlan(setNum) {
+  planNums = planNums.includes(setNum) ? planNums.filter((n) => n !== setNum) : [...planNums, setNum];
+  savePlan();
+  refreshResults();
+}
+
+// A set's part lines from the match data, which is grouped by part; the
+// per-set index is built the first time it's needed.
+function setLines(m, sid) {
+  if (!m.bySet) {
+    const E = m.sids.length;
+    const start = new Uint32Array(m.sets.length + 2);
+    const group = new Int32Array(E);
+    for (let g = 0; g < m.keys.length; g++) {
+      for (let e = m.starts[g]; e < m.starts[g + 1]; e++) {
+        group[e] = g;
+        start[m.sids[e] + 1]++;
+      }
+    }
+    for (let i = 1; i < start.length; i++) start[i] += start[i - 1];
+    const order = new Uint32Array(E);
+    const fill = start.slice();
+    for (let e = 0; e < E; e++) order[fill[m.sids[e]]++] = e;
+    m.bySet = { start, order, group };
+  }
+  const { start, order, group } = m.bySet;
+  const lines = [];
+  for (let i = start[sid]; i < start[sid + 1]; i++) {
+    const e = order[i];
+    const key = m.keys[group[e]];
+    lines.push({ pid: Math.floor(key / 16384), color_id: (key % 16384) - 1, qty: m.qtys[e], have: 0 });
+  }
+  return lines;
+}
+
+// Takes a set's pieces out of pool (key -> piece, quantities are used up):
+// exact matches first, then, as the match mode allows, the same part in other
+// colors or similar parts. Returns how many pieces it covered.
+function allocate(m, pool, lines, mode) {
+  const take = (l, k) => {
+    const p = pool.get(k);
+    if (!p) return;
+    const n = Math.min(p.qty, l.qty - l.have);
+    l.have += n;
+    p.qty -= n;
+    if (!p.qty) pool.delete(k);
+  };
+  for (const l of lines) take(l, keyOf(l.pid, l.color_id));
+  if (mode !== "exact") {
+    const poolOf = (pid) => (mode === "similar" && m.familyOf.get(pid)) || pid;
+    const byPool = new Map();
+    for (const [k, p] of pool) {
+      if (!byPool.has(poolOf(p.pid))) byPool.set(poolOf(p.pid), []);
+      // The same part in another color goes before a similar part.
+      byPool.get(poolOf(p.pid)).push([p.pid, k]);
+    }
+    for (const l of lines) {
+      const ks = (byPool.get(poolOf(l.pid)) || []).sort((a, b) => (b[0] === l.pid) - (a[0] === l.pid));
+      for (const [, k] of ks) {
+        if (l.have >= l.qty) break;
+        take(l, k);
+      }
+    }
+  }
+  return lines.reduce((n, l) => n + l.have, 0);
+}
+
+function computePlan(m, mode) {
+  m.setByNum ??= new Map(m.sets.map((s) => [s.set_num, s]));
+  const pool = new Map([...collection].map(([k, p]) => [k, { ...p }]));
+  const entries = [];
+  for (const num of planNums) {
+    const s = m.setByNum.get(num);
+    if (!s) continue;
+    const before = [...pool.values()].map((p) => ({ ...p }));
+    const lines = setLines(m, s.sid);
+    const got = allocate(m, pool, lines, mode);
+    entries.push({ set: s, got, before, missing: lines.filter((l) => l.have < l.qty) });
+  }
+  lastPlan = { entries, left: [...pool.values()] };
+  return lastPlan;
+}
+
+function renderPlan(plan) {
+  const { entries, left } = plan;
+  $("plan-count").textContent = entries.length;
+  $("plan-empty").hidden = entries.length > 0;
+  $("plan-clear").hidden = !entries.length;
+  $("plan-total").hidden = !entries.length;
+  if (!entries.length) $("plan-bl").hidden = true;
+  $("plan-list").innerHTML = entries.map((e, i) => {
+    const s = e.set;
+    const pct = Math.floor((e.got / s.total) * 1000) / 10;
+    return `<li><span class="order">${i + 1}.</span><button type="button" class="result" data-plan="${i}">
+      <img src="${esc(setImg(s.set_num))}" alt="" loading="lazy" onerror="this.style.visibility='hidden'">
+      <div class="body">
+        <div class="title">${esc(s.name)}</div>
+        <div class="sub">${esc(s.set_num)} · ${fmt(e.got)} of ${fmt(s.total)} pieces${e.got < s.total ? ` · <span class="missing">${fmt(s.total - e.got)} missing</span>` : ""}</div>
+        <div class="bar"><span class="${pct >= 100 ? "full" : ""}" style="width:${Math.min(100, pct)}%"></span></div>
+      </div>
+      <div class="pct">${pct}%</div></button>
+      <button type="button" class="icon-btn" data-remove="${esc(s.set_num)}" aria-label="Remove ${esc(s.name)} from the plan">×</button></li>`;
+  }).join("");
+  if (!entries.length) return;
+  const used = entries.reduce((n, e) => n + e.got, 0);
+  const missing = entries.reduce((n, e) => n + e.set.total - e.got, 0);
+  const owned = [...collection.values()].reduce((n, p) => n + p.qty, 0);
+  $("plan-total").innerHTML = `Uses <b>${fmt(used)}</b> of your ${fmt(owned)} pieces
+    (${fmt(left.reduce((n, p) => n + p.qty, 0))} left over)${missing ? ` · <span class="missing">${fmt(missing)} pieces missing</span>` : " · nothing missing"}
+    ${missing ? `<div class="links"><a href="#" data-plan-export="csv">Download missing (CSV)</a>
+      <button type="button" class="ghost" data-plan-export="bricklink">BrickLink wanted list</button></div>` : ""}`;
+}
+
+// The missing pieces of every set in the plan, with part numbers.
+async function planMissing() {
+  const lines = new Map();
+  for (const e of lastPlan.entries) {
+    for (const l of e.missing) {
+      const k = keyOf(l.pid, l.color_id);
+      const line = lines.get(k) || { pid: l.pid, color_id: l.color_id, qty: 0, have: 0 };
+      line.qty += l.qty - l.have;
+      lines.set(k, line);
+    }
+  }
+  const nums = new Map((await query("SELECT p.pid, p.part_num FROM json_each(?) j CROSS JOIN parts p ON p.pid = j.value",
+    [JSON.stringify([...new Set([...lines.values()].map((l) => l.pid))])])).map((r) => [r.pid, r.part_num]));
+  return [...lines.values()].map((l) => ({ ...l, part_num: nums.get(l.pid) ?? String(l.pid) }));
+}
+
+async function exportPlan(kind) {
+  const missing = await planMissing();
+  const names = lastPlan.entries.map((e) => e.set.set_num);
+  if (kind === "csv") return download("build-plan-missing.csv", toCsv(missing.map((p) => [p.part_num, p.color_id, p.qty])));
+  const remark = `For build plan: ${names.slice(0, 4).join(", ")}${names.length > 4 ? ", …" : ""}`;
+  showWantedList(missing, remark, "build-plan", $("plan-bl"));
+}
+
+// Adds sets one at a time: each round takes the set that would use the most
+// of the pieces still free, among those at least as complete as asked and
+// within the result filters, until none qualifies (at most 10 per click).
+async function suggestPlan() {
+  const m = await matchData;
+  const mode = matchMode();
+  const threshold = Number($("plan-threshold").value);
+  const f = readFilters();
+  let added = 0;
+  for (let round = 0; round < 10; round++) {
+    const got = coverage(m, mode, computePlan(m, mode).left);
+    const inPlan = new Set(planNums);
+    let best = null;
+    for (const s of m.sets) {
+      const g = got[s.sid];
+      if (!g || g < s.total * threshold || inPlan.has(s.set_num) || !passesFilters(s, g, f)) continue;
+      if (!best || g > best.g || (g === best.g && s.total < best.s.total)) best = { s, g };
+    }
+    if (!best) break;
+    planNums.push(best.s.set_num);
+    added++;
+  }
+  savePlan();
+  await refreshResults();
+  setStatus(added
+    ? `Added ${fmt(added)} set${added > 1 ? "s" : ""} to the build plan.`
+    : `No more sets reach ${Math.round(threshold * 100)}% with the pieces left. Try a lower level or looser filters.`);
 }
 
 // ---------- import / export ----------
@@ -1358,7 +1557,32 @@ $("finder-dialog").addEventListener("click", (e) => {
 $("add-form").addEventListener("submit", addPicked);
 $("pieces").addEventListener("change", onPiecesInput);
 $("pieces").addEventListener("click", onPiecesClick);
+$("plan-suggest").addEventListener("click", suggestPlan);
+$("plan-clear").addEventListener("click", () => {
+  if (!confirm("Remove every set from the build plan?")) return;
+  planNums = [];
+  savePlan();
+  refreshResults();
+});
+$("plan-list").addEventListener("click", (e) => {
+  const remove = e.target.closest("[data-remove]");
+  if (remove) return togglePlan(remove.dataset.remove);
+  const btn = e.target.closest("[data-plan]");
+  if (!btn) return;
+  const entry = lastPlan.entries[Number(btn.dataset.plan)];
+  const i = Number(btn.dataset.plan);
+  openSet({ ...entry.set, got: entry.got, ratio: entry.got / entry.set.total, pool: entry.before,
+    poolNote: i ? `Counting only the pieces left after set${i > 1 ? "s" : ""} 1${i > 1 ? `–${i}` : ""} of your build plan.` : "" });
+});
+$("plan-total").addEventListener("click", (e) => {
+  const btn = e.target.closest("[data-plan-export]");
+  if (!btn) return;
+  e.preventDefault();
+  exportPlan(btn.dataset.planExport);
+});
 $("results").addEventListener("click", (e) => {
+  const add = e.target.closest(".plan-add");
+  if (add) return togglePlan(add.dataset.set);
   const btn = e.target.closest(".result");
   if (btn) openSet(lastResults[Number(btn.dataset.i)]);
 });
