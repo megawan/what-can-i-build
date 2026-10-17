@@ -57,7 +57,7 @@ async function init() {
     return;
   }
 
-  for (const id of ["part-search", "set-search", "set-qty", "set-add-btn", "sample-btn", "export-btn", "clear-btn"]) $(id).disabled = false;
+  for (const id of ["part-search", "set-search", "set-filter", "set-qty", "set-add-btn", "sample-btn", "export-btn", "clear-btn"]) $(id).disabled = false;
   restoreFilters();
   await restore();
   renderPieces();
@@ -109,7 +109,14 @@ async function loadMatchData(url, cache = "default") {
   }
   const sets = head.sets.map(([set_num, name, year, theme_id, total], i) => ({ sid: i + 1, set_num, name, year, theme_id, total }));
   const sample = head.sample.map(([pid, part_num, name, color_id, qty, img]) => ({ pid, part_num, name, color_id, qty, img }));
-  return { builtAt: head.built_at, keys, starts, sids, qtys, sets, sample };
+  // Families of similar parts, keyed by their first (most-used) pid.
+  const families = new Map();
+  const familyOf = new Map();
+  for (const pids of head.similar || []) {
+    families.set(pids[0], pids);
+    for (const pid of pids) familyOf.set(pid, pids[0]);
+  }
+  return { builtAt: head.built_at, keys, starts, sids, qtys, sets, sample, families, familyOf };
 }
 
 // match.bin keys are pid << 14 | (color_id + 1).
@@ -132,11 +139,12 @@ function forEachColor(m, pid, fn) {
   for (let g = lowerBound(m.keys, matchKey(pid, -1)); g < m.keys.length && m.keys[g] < end; g++) fn(g, (m.keys[g] & 16383) - 1);
 }
 
-// For every set, how many of its pieces the collection covers: by part and
-// color, or with anyColor by part only, so all colors of a part pool together.
-function coverage(m, anyColor) {
+// For every set, how many of its pieces the collection covers. mode is
+// "exact" (part and color), "color" (all colors of a part pool together) or
+// "similar" (all colors of a whole family of similar parts pool together).
+function coverage(m, mode) {
   const got = new Int32Array(m.sets.length + 1);
-  if (!anyColor) {
+  if (mode === "exact") {
     for (const p of collection.values()) {
       const g = lowerBound(m.keys, matchKey(p.pid, p.color_id));
       if (m.keys[g] !== matchKey(p.pid, p.color_id)) continue;
@@ -144,18 +152,21 @@ function coverage(m, anyColor) {
     }
     return got;
   }
+  const poolOf = (pid) => (mode === "similar" && m.familyOf.get(pid)) || pid;
   const have = new Map();
-  for (const p of collection.values()) have.set(p.pid, (have.get(p.pid) || 0) + p.qty);
+  for (const p of collection.values()) have.set(poolOf(p.pid), (have.get(poolOf(p.pid)) || 0) + p.qty);
   const need = new Int32Array(m.sets.length + 1);
   const touched = [];
-  for (const [pid, qty] of have) {
-    forEachColor(m, pid, (g) => {
-      for (let e = m.starts[g]; e < m.starts[g + 1]; e++) {
-        const sid = m.sids[e];
-        if (!need[sid]) touched.push(sid);
-        need[sid] += m.qtys[e];
-      }
-    });
+  for (const [pool, qty] of have) {
+    for (const pid of (mode === "similar" && m.families.get(pool)) || [pool]) {
+      forEachColor(m, pid, (g) => {
+        for (let e = m.starts[g]; e < m.starts[g + 1]; e++) {
+          const sid = m.sids[e];
+          if (!need[sid]) touched.push(sid);
+          need[sid] += m.qtys[e];
+        }
+      });
+    }
     for (const sid of touched) {
       got[sid] += Math.min(need[sid], qty);
       need[sid] = 0;
@@ -364,20 +375,26 @@ async function addPicked(e) {
 
 let pickedSet = null;
 
-// "10696" finds 10696-1 first, then other set numbers starting with it; any
-// other text matches set names containing every word.
+// How well a set matches lowercase search text, best first, or -1: "10696"
+// finds 10696-1, then other set numbers starting with it; any other text
+// matches sets whose name and theme contain every word.
+function setTextRank(s, q) {
+  const num = s.set_num.toLowerCase();
+  if (num === q || num === `${q}-1`) return 0;
+  if (num.startsWith(q)) return 1;
+  s.search_text ??= `${s.name} ${themeName(s.theme_id)}`.toLowerCase();
+  return q.split(/\s+/).every((w) => s.search_text.includes(w)) ? 2 : -1;
+}
+
 async function searchSets(text) {
   const q = text.trim().toLowerCase();
   pickedSet = null;
   if (!q) return fillSuggestions($("set-suggestions"), [], null, null);
   const m = await matchData;
   if ($("set-search").value.trim().toLowerCase() !== q) return;
-  const words = q.split(/\s+/);
   const found = [];
   for (const s of m.sets) {
-    const num = s.set_num.toLowerCase();
-    const rank = num === q || num === `${q}-1` ? 0 : num.startsWith(q) ? 1
-      : words.every((w) => s.name.toLowerCase().includes(w)) ? 2 : -1;
+    const rank = setTextRank(s, q);
     if (rank >= 0) found.push([rank, s]);
   }
   found.sort((a, b) => a[0] - b[0] || b[1].total - a[1].total);
@@ -493,15 +510,17 @@ function onPiecesClick(e) {
 let resultsTimer;
 let resultsSeq = 0;
 let lastResults = [];
+let allResults = [];
+let resultsLimit = MAX_RESULTS;
 
 function scheduleResults() {
   clearTimeout(resultsTimer);
   resultsTimer = setTimeout(refreshResults, 350);
 }
 
-function anyColor() { return $("any-color").checked; }
+function matchMode() { return $("match-mode").value; }
 
-const FILTER_IDS = ["any-color", "min-size", "theme-filter", "year-from", "year-to", "max-missing"];
+const FILTER_IDS = ["match-mode", "min-size", "theme-filter", "year-from", "year-to", "max-missing"];
 
 function readFilters() {
   const num = (id) => ($(id).value === "" ? null : Number($(id).value));
@@ -554,8 +573,9 @@ function fillThemes(m) {
 
 async function refreshResults() {
   const seq = ++resultsSeq;
-  if (!collection.size) {
-    lastResults = [];
+  const text = $("set-filter").value.trim().toLowerCase();
+  if (!collection.size && !text) {
+    lastResults = allResults = [];
     renderResults();
     setStatus(`${fmt(totalSets)} sets`);
     return;
@@ -570,19 +590,25 @@ async function refreshResults() {
     return;
   }
   if (seq !== resultsSeq) return;
-  const got = coverage(m, anyColor());
+  const mode = matchMode();
+  const got = coverage(m, mode);
+  // What other colors and similar parts would add, shown as a hint.
+  const flex = mode === "similar" ? got : coverage(m, "similar");
   const f = readFilters();
   const rows = [];
   for (const s of m.sets) {
     const g = got[s.sid];
-    if (!g || s.total < f.minSize) continue;
+    // With search text, sets you have nothing for are listed too.
+    const rank = text ? setTextRank(s, text) : 0;
+    if (rank < 0 || (!g && !text) || s.total < f.minSize) continue;
     if (f.theme != null && s.root_theme !== f.theme) continue;
     if ((f.yearFrom != null && s.year < f.yearFrom) || (f.yearTo != null && s.year > f.yearTo)) continue;
     if (f.maxMissing != null && s.total - g > f.maxMissing) continue;
-    rows.push({ ...s, got: g, ratio: g / s.total });
+    rows.push({ ...s, got: g, ratio: g / s.total, more: flex[s.sid] - g, rank });
   }
-  rows.sort((a, b) => b.ratio - a.ratio || b.total - a.total);
-  lastResults = rows.slice(0, MAX_RESULTS);
+  rows.sort((a, b) => b.ratio - a.ratio || a.rank - b.rank || b.total - a.total);
+  allResults = rows;
+  lastResults = rows.slice(0, resultsLimit);
   renderResults();
   setStatus(`${fmt(totalSets)} sets checked in ${((performance.now() - t0) / 1000).toFixed(2)} s`);
 }
@@ -600,9 +626,15 @@ function setImg(setNum) {
 
 function renderResults() {
   $("results-empty").hidden = lastResults.length > 0;
-  $("results-empty").textContent = collection.size
-    ? "No sets match these pieces with these filters. Try loosening them."
-    : "Add some pieces to see matching sets.";
+  $("results-empty").textContent = $("set-filter").value.trim()
+    ? "No sets match this search with these filters."
+    : collection.size
+      ? "No sets match these pieces with these filters. Try loosening them."
+      : "Add some pieces, or search above, to see sets.";
+  $("results-more").hidden = !allResults.length;
+  $("results-count").textContent = `Showing ${fmt(lastResults.length)} of ${fmt(allResults.length)} sets`;
+  $("more-btn").hidden = lastResults.length >= allResults.length;
+  const moreWith = matchMode() === "exact" ? "other colors or similar parts" : "similar parts";
   $("results").innerHTML = lastResults.map((r, i) => {
     const pct = Math.floor(r.ratio * 1000) / 10;
     return `<li><button type="button" class="result" data-i="${i}">
@@ -610,7 +642,7 @@ function renderResults() {
       <div class="body">
         <div class="title">${esc(r.name)}</div>
         <div class="sub">${esc(r.set_num)} · ${r.year} · ${esc(themeName(r.theme_id))}</div>
-        <div class="sub">${fmt(r.got)} of ${fmt(r.total)} pieces</div>
+        <div class="sub">${fmt(r.got)} of ${fmt(r.total)} pieces${r.more > 0 ? ` <span class="hint">· +${fmt(r.more)} with ${moreWith}</span>` : ""}</div>
         <div class="bar"><span class="${pct >= 100 ? "full" : ""}" style="width:${Math.min(100, pct)}%"></span></div>
       </div>
       <div class="pct">${pct}%</div></button></li>`;
@@ -625,29 +657,53 @@ async function openSet(r) {
   body.innerHTML = `<p class="empty">Loading parts…</p>`;
   dialog.showModal();
 
-  const parts = await setParts(r.sid);
+  const [parts, m] = await Promise.all([setParts(r.sid), matchData]);
+  const mode = matchMode();
 
-  // How many of each line the collection covers. In any-color mode, exact
-  // colors are used first, then the remaining pieces of that part in any color.
-  const pool = new Map();
-  for (const p of collection.values()) pool.set(keyOf(p.pid, p.color_id), p.qty);
+  // How many of each line the collection covers: exact matches first, then the
+  // same part in other colors, then similar parts. The match mode decides which
+  // of these count; the others are shown as substitutes you could use.
+  const items = [...collection.values()];
+  const pool = new Map(items.map((p) => [keyOf(p.pid, p.color_id), p.qty]));
+  const familyOf = (pid) => m.familyOf.get(pid) ?? pid;
+  const groupBy = (key) => {
+    const map = new Map();
+    for (const p of items) map.set(key(p), [...(map.get(key(p)) || []), p]);
+    return map;
+  };
+  const byPart = groupBy((p) => p.pid);
+  const byFamily = groupBy((p) => familyOf(p.pid));
+  const take = (p, candidates, kind) => {
+    for (const c of candidates || []) {
+      const k = keyOf(c.pid, c.color_id);
+      const n = Math.min(pool.get(k), p.qty - p.covered);
+      if (n <= 0 || k === keyOf(p.pid, p.color_id) || (kind === "similar" && c.pid === p.pid)) continue;
+      p.subs.push({ kind, n, part_num: c.part_num, color_id: c.color_id });
+      p.covered += n;
+      pool.set(k, pool.get(k) - n);
+    }
+  };
   for (const p of parts) {
     const k = keyOf(p.pid, p.color_id);
-    p.have = Math.min(p.qty, pool.get(k) || 0);
-    pool.set(k, (pool.get(k) || 0) - p.have);
+    p.covered = Math.min(p.qty, pool.get(k) || 0);
+    p.subs = [];
+    if (p.covered) pool.set(k, pool.get(k) - p.covered);
   }
-  if (anyColor()) {
-    for (const p of parts) {
-      for (const [k, left] of pool) {
-        if (p.have >= p.qty) break;
-        if (left > 0 && k.startsWith(`${p.pid}:`)) {
-          const take = Math.min(left, p.qty - p.have);
-          p.have += take;
-          pool.set(k, left - take);
-        }
-      }
-    }
+  for (const p of parts) take(p, byPart.get(p.pid), "color");
+  for (const p of parts) take(p, byFamily.get(familyOf(p.pid)), "similar");
+  const counts = (sub) => (sub.kind === "color" ? mode !== "exact" : mode === "similar");
+  let possible = 0;
+  for (const p of parts) {
+    p.have = p.covered - p.subs.filter((sub) => !counts(sub)).reduce((n, sub) => n + sub.n, 0);
+    possible += p.covered - p.have;
   }
+  const subNote = (p) => {
+    const list = (subs) => subs.map((sub) => `${sub.n}× ${esc(sub.part_num)} ${esc(colors.get(sub.color_id)?.name ?? "")}`).join(", ");
+    const used = p.subs.filter(counts);
+    const could = p.subs.filter((sub) => !counts(sub));
+    return (used.length ? `<div class="hint">Using ${list(used)}</div>` : "")
+      + (could.length ? `<div class="hint">Could use ${list(could)}</div>` : "");
+  };
   const missing = parts.filter((p) => p.have < p.qty).sort((a, b) => (b.qty - b.have) - (a.qty - a.have));
   const owned = parts.filter((p) => p.have >= p.qty);
   const missingCount = missing.reduce((s, p) => s + p.qty - p.have, 0);
@@ -659,7 +715,7 @@ async function openSet(r) {
     return `<tr class="${lack ? "" : "ok"}">
       <td>${img(p.img, "thumb")}</td>
       <td><a href="https://rebrickable.com/parts/${encodeURIComponent(p.part_num)}/" target="_blank" rel="noopener">${esc(p.part_num)}</a>
-        <div class="pname">${esc(p.name)}</div></td>
+        <div class="pname">${esc(p.name)}</div>${subNote(p)}</td>
       <td>${swatch(c)}${esc(c?.name)}</td>
       <td class="num">${p.have} / ${p.qty}</td>
       <td class="num">${lack ? `<span class="missing">−${lack}</span>` : "✓"}</td></tr>`;
@@ -673,7 +729,7 @@ async function openSet(r) {
       <div>
         <h3>${esc(r.name)}</h3>
         <div class="sub">${esc(r.set_num)} · ${r.year} · ${esc(themeName(r.theme_id))}</div>
-        <div class="sub">You have ${fmt(r.got)} of ${fmt(r.total)} pieces (${Math.floor(r.ratio * 1000) / 10}%)${missingCount ? ` · ${fmt(missingCount)} missing` : ""}</div>
+        <div class="sub">You have ${fmt(r.got)} of ${fmt(r.total)} pieces (${Math.floor(r.ratio * 1000) / 10}%)${missingCount ? ` · ${fmt(missingCount)} missing` : ""}${possible ? ` · <span class="hint">${fmt(possible)} could come from substitutes</span>` : ""}</div>
         <div class="links">
           <a href="https://www.lego.com/service/buildinginstructions/${encodeURIComponent(instr)}" target="_blank" rel="noopener">Instructions</a>
           <a href="https://rebrickable.com/sets/${encodeURIComponent(r.set_num)}/" target="_blank" rel="noopener">Rebrickable</a>
@@ -775,9 +831,23 @@ $("results").addEventListener("click", (e) => {
 for (const id of FILTER_IDS) {
   $(id).addEventListener("change", () => {
     saveFilters();
+    resultsLimit = MAX_RESULTS;
     refreshResults();
   });
 }
+let browseTimer;
+$("set-filter").addEventListener("input", () => {
+  clearTimeout(browseTimer);
+  browseTimer = setTimeout(() => {
+    resultsLimit = MAX_RESULTS;
+    refreshResults();
+  }, 200);
+});
+$("more-btn").addEventListener("click", () => {
+  resultsLimit += MAX_RESULTS;
+  lastResults = allResults.slice(0, resultsLimit);
+  renderResults();
+});
 $("import-file").addEventListener("change", importFile);
 $("export-btn").addEventListener("click", () =>
   download("my-pieces.csv", toCsv([...collection.values()].map((p) => [p.part_num, p.color_id, p.qty]))));

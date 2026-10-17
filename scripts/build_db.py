@@ -96,6 +96,30 @@ def mold_roots(db: sqlite3.Connection) -> dict:
     return {child: root(child) for child in parent}
 
 
+def similar_families(staging: sqlite3.Connection, canon, pid_of: dict) -> list:
+    """Group parts that build the same way: alternates ("A"), and printed ("P") or
+    patterned ("T") versions of a plain part. Returns (pid, grp) for every part in
+    a family of two or more, grp being the family's smallest (most-used) pid."""
+    parent = {}
+
+    def find(p: int) -> int:
+        while parent.get(p, p) != p:
+            parent[p] = parent.get(parent[p], parent[p])
+            p = parent[p]
+        return p
+
+    for child, par in staging.execute(
+        "SELECT child_part_num, parent_part_num FROM raw_part_relationships WHERE rel_type IN ('A', 'P', 'T')"
+    ):
+        a, b = pid_of.get(canon(child)), pid_of.get(canon(par))
+        if a and b and a != b:
+            ra, rb = find(a), find(b)
+            if ra != rb:
+                parent[max(ra, rb)] = min(ra, rb)
+                parent.setdefault(min(ra, rb), min(ra, rb))
+    return sorted((p, find(p)) for p in parent)
+
+
 def build(staging: sqlite3.Connection, out_path: Path) -> None:
     if out_path.exists():
         out_path.unlink()
@@ -120,6 +144,8 @@ def build(staging: sqlite3.Connection, out_path: Path) -> None:
                                 qty INTEGER NOT NULL, PRIMARY KEY (sid, pid, color_id)) WITHOUT ROWID;
         CREATE TABLE part_imgs (pid INTEGER NOT NULL, color_id INTEGER NOT NULL, img TEXT NOT NULL,
                                 PRIMARY KEY (pid, color_id)) WITHOUT ROWID;
+        -- Parts that can stand in for each other; grp is the most-used pid of the family.
+        CREATE TABLE similar_parts (pid INTEGER PRIMARY KEY, grp INTEGER NOT NULL);
         """
     )
 
@@ -219,6 +245,7 @@ def build(staging: sqlite3.Connection, out_path: Path) -> None:
         "INSERT INTO set_parts VALUES (?, ?, ?, ?)",
         sorted((sid_of[s], pid_of[p], c, q) for (p, c, s), q in agg.items() if s in sid_of),
     )
+    db.executemany("INSERT INTO similar_parts VALUES (?, ?)", similar_families(staging, canon, pid_of))
     db.executemany(
         "INSERT INTO part_imgs VALUES (?, ?, ?)",
         sorted((pid_of[p], c, i) for (p, c), i in imgs.items()),
@@ -279,7 +306,8 @@ def write_match(db_path: Path, out_dir: Path) -> None:
         "WCIB", uint32 header length, header JSON (space-padded to 4 bytes):
             {built_at, groups, entries,
              sets: [[set_num, name, year, theme_id, total], ...]   (index = sid - 1),
-             sample: [[pid, part_num, name, color_id, qty, img], ...]}
+             sample: [[pid, part_num, name, color_id, qty, img], ...],
+             similar: [[pid, ...], ...]   (families of similar parts, most-used first)}
         uint32[groups]   key = pid << COLOR_BITS | (color_id + 1), delta from the previous key
         uint16[groups]   number of sets in each (pid, color_id) group
         uint16[entries]  sid, delta from the previous entry in the same group
@@ -300,6 +328,10 @@ def write_match(db_path: Path, out_dir: Path) -> None:
            WHERE s.set_num = ?""",
         (SAMPLE_SET,),
     ).fetchall()
+
+    families = {}
+    for pid, grp in db.execute("SELECT pid, grp FROM similar_parts ORDER BY grp, pid"):
+        families.setdefault(grp, []).append(pid)
 
     keys, counts, sids, qtys = array.array("I"), array.array("H"), array.array("H"), array.array("H")
     prev_key = prev_sid = 0
@@ -325,6 +357,7 @@ def write_match(db_path: Path, out_dir: Path) -> None:
             "entries": len(sids),
             "sets": [list(r[1:]) for r in sets],
             "sample": [list(r) for r in sample],
+            "similar": list(families.values()),
         },
         separators=(",", ":"),
         ensure_ascii=False,

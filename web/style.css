@@ -110,7 +110,10 @@ input:focus, select:focus, button:focus-visible { outline: 2px solid var(--accen
 .filters label { display: flex; gap: 6px; align-items: center; }
 .filters select { width: auto; max-width: 14em; padding: 4px 8px; }
 .filters input[type="number"] { width: 5.2em; padding: 4px 6px; }
-.toggle input { width: auto; accent-color: var(--accent); }
+.browse { margin-bottom: 10px; }
+.more { display: flex; gap: 10px; align-items: center; justify-content: space-between; padding-top: 10px;
+  color: var(--muted); font-size: 13px; }
+.result .hint, .parts-table .hint { color: var(--good); font-size: 12px; }
 
 .results { list-style: none; margin: 0; padding: 0; }
 .results li { border-bottom: 1px solid var(--line); }
