@@ -524,7 +524,7 @@ function loadCatalog() {
       .map(([id, n]) => [categories.get(id) ?? "Other", id, n])
       .sort((a, b) => a[0].localeCompare(b[0]))
       .map(([name, id, n]) => `<option value="${id}">${esc(name)} (${fmt(n)})</option>`).join("");
-    return { parts, categories };
+    return { parts, categories, byNum: new Map(parts.map((p) => [p.part_num, p])) };
   });
   return catalog;
 }
@@ -570,17 +570,52 @@ function parseDescription(text) {
 
 const colorAvailable = (m, pid, color) => m.keys[lowerBound(m.keys, matchKey(pid, color))] === matchKey(pid, color);
 
-async function runFinder() {
-  const { parts, categories } = await loadCatalog();
-  const m = await matchData;
-  const q = parseDescription($("finder-text").value);
-  const cat = $("finder-cat").value === "" ? null : Number($("finder-cat").value);
-  // Words no part name contains (e.g. untranslated ones) are ignored.
+// Shapes for the "pick what it looks like" steps, as groups of Rebrickable
+// part categories; each chip shows the most-used part of its group.
+const SHAPES = [
+  ["brick", "Brick", [11, 5]],
+  ["plate", "Plate", [14, 9]],
+  ["tile", "Tile (smooth top)", [19, 15]],
+  ["slope", "Slope", [3]],
+  ["curved", "Curved", [37]],
+  ["round", "Round", [20, 21, 67]],
+  ["wedge", "Wedge", [6, 49]],
+  ["technic", "Technic", [8, 12, 22, 25, 26, 40, 44, 46, 51, 52, 53, 54, 55]],
+  ["wheel", "Wheel or tyre", [29]],
+  ["window", "Window or door", [16, 47]],
+  ["hinge", "Hinge or turntable", [18]],
+  ["bar", "Bar, ladder or fence", [32]],
+  ["panel", "Panel", [23]],
+  ["minifig", "Minifig part", [13, 27, 59, 60, 61, 65, 70, 71, 72, 73]],
+  ["nature", "Plant, animal or rock", [28, 33, 74, 75, 76]],
+  ["duplo", "Duplo", [4]],
+];
+const OTHER_SHAPE = ["other", "Something else", null];
+// Name words that don't describe the shape, left out of the detail choices.
+const NOT_DETAILS = new Set("print printed pattern patterned sticker type old new version sized without".split(" "));
+// The most-used colors, offered as swatches.
+const TOP_COLORS = [0, 15, 71, 72, 4, 14, 70, 1, 19, 2, 7, 25, 28, 297, 272, 47, 27, 320, 84, 322, 191, 41, 179, 10, 484, 36, 308, 288, 3, 29, 85, 378];
+
+let finderMode = "pick";
+const pickState = { shape: null, size: null, details: [], color: null };
+let photoResults = [];
+
+const shapeCats = (key) => {
+  if (key === "other") {
+    const used = new Set(SHAPES.flatMap((sh) => sh[2]));
+    return { has: (c) => !used.has(c) };
+  }
+  return key ? new Set(SHAPES.find((sh) => sh[0] === key)[2]) : null;
+};
+
+// Parts that fit a query, best first. Words no part name contains (e.g.
+// untranslated ones) are ignored rather than ruling everything out.
+function searchCatalog(parts, m, q, cats) {
   const known = q.groups.filter((g) => parts.some((p) => g.alts.some((a) => p.lower.includes(a))));
   const ignored = q.groups.filter((g) => !known.includes(g));
   const scored = [];
   for (const p of parts) {
-    if (cat != null && p.cat_id !== cat) continue;
+    if (cats && !cats.has(p.cat_id)) continue;
     // Two numbers match the footprint, so "1 x 2" also finds "Brick 1 x 2 x 3".
     if (q.size && (!p.size || q.size.some((n, i) => n !== p.size[i]))) continue;
     if (q.studs && (!p.size || p.size[0] * p.size[1] !== q.studs)) continue;
@@ -597,9 +632,110 @@ async function runFinder() {
   }
   scored.sort((a, b) => b.score - a.score || b.weight - a.weight);
   const exact = scored.filter((r) => r.score === known.length);
-  const list = exact.length ? exact : scored;
+  return { list: (exact.length ? exact : scored).map((r) => r.p), exact: exact.length > 0, known, ignored };
+}
+
+function pickQuery() {
+  return {
+    color: pickState.color,
+    size: pickState.size,
+    studs: null,
+    holes: null,
+    groups: pickState.details.map((w) => ({ word: w, alts: [w] })),
+  };
+}
+
+const chip = (attrs, pressed, inner, cls = "chip") => `<button type="button" class="${cls}" ${attrs} aria-pressed="${pressed}">${inner}</button>`;
+
+// Shape chips, then the sizes and details that occur among the parts still
+// in play, so each step only offers choices that lead somewhere.
+function renderPickChips(parts, m, list) {
+  $("pick-shapes").innerHTML = [...SHAPES, OTHER_SHAPE].map(([key, label]) => {
+    const cats = shapeCats(key);
+    const top = parts.find((p) => cats.has(p.cat_id));
+    const pic = top?.img ? `<img src="${IMG + esc(top.img)}" alt="" loading="lazy">` : "";
+    return chip(`data-shape="${key}"`, pickState.shape === key, `${pic}${esc(label)}`, "chip shape");
+  }).join("");
+
+  const sized = searchCatalog(parts, m, { ...pickQuery(), size: null }, shapeCats(pickState.shape)).list;
+  const sizes = new Map();
+  for (const p of sized) {
+    if (!p.size) continue;
+    const k = p.size.slice(0, 2).join("x");
+    sizes.set(k, (sizes.get(k) || 0) + p.in_sets);
+  }
+  const current = pickState.size?.join("x");
+  const topSizes = [...sizes].sort((a, b) => b[1] - a[1]).slice(0, 16).map(([k]) => k);
+  if (current && !topSizes.includes(current)) topSizes.unshift(current);
+  $("pick-sizes").innerHTML = topSizes
+    .sort((a, b) => a.split("x")[0] - b.split("x")[0] || a.split("x")[1] - b.split("x")[1])
+    .map((k) => chip(`data-size="${k}"`, k === current, k.replace("x", " × "))).join("")
+    || `<span class="step-label">No sizes in studs for these parts.</span>`;
+
+  // Words that split the remaining parts: in at least two of them (one-off
+  // print descriptions aren't useful) but not in nearly all of them.
+  const colorWords = new Set([...colors.values()].flatMap((c) => c.name.toLowerCase().split(/[^a-z]+/)));
+  const counts = new Map();
+  const sample = list.slice(0, 3000);
+  for (const p of sample) {
+    for (const w of new Set(p.lower.split(/[^a-z°]+/))) {
+      if (w.length < 3 || STOP_WORDS.has(w) || NOT_DETAILS.has(w) || colorWords.has(w) || pickState.details.includes(w)) continue;
+      const c = counts.get(w) || { parts: 0, weight: 0 };
+      c.parts++;
+      c.weight += p.in_sets;
+      counts.set(w, c);
+    }
+  }
+  const total = sample.reduce((n, p) => n + p.in_sets, 0);
+  const details = [...counts].filter(([, c]) => c.parts > 1 && c.weight < total * 0.85)
+    .sort((a, b) => b[1].weight - a[1].weight).slice(0, 14).map(([w]) => w);
+  $("pick-details").innerHTML = [...pickState.details.map((w) => chip(`data-detail="${esc(w)}"`, true, esc(w))),
+    ...details.map((w) => chip(`data-detail="${esc(w)}"`, false, esc(w)))].join("")
+    || `<span class="step-label">Pick a shape first.</span>`;
+
+  $("pick-colors").innerHTML = TOP_COLORS.filter((id) => colors.has(id)).map((id) => {
+    const c = colors.get(id);
+    return chip(`data-color="${id}" title="${esc(c.name)}" aria-label="${esc(c.name)}"`, pickState.color === id, swatch(c), "chip color");
+  }).join("");
+}
+
+function renderFinderGrid(cards, emptyText) {
+  const shown = cards.slice(0, finderLimit);
+  $("finder-grid").innerHTML = shown.map((c, i) => `<li><button type="button" data-i="${i}"${c.part ? "" : ' class="unknown"'}>
+      ${c.img ? `<img src="${esc(c.img)}" alt="" loading="lazy" onerror="this.style.visibility='hidden'">` : `<span class="noimg"></span>`}
+      <strong>${esc(c.title)}</strong><span>${esc(c.name)}</span>
+      <span class="meta">${c.meta}</span></button></li>`).join("")
+    || `<li class="empty">${emptyText}</li>`;
+  $("finder-grid")._items = shown;
+  $("finder-more-row").hidden = !cards.length;
+  $("finder-count").textContent = `Showing ${fmt(shown.length)} of ${fmt(cards.length)}`;
+  $("finder-more").hidden = shown.length >= cards.length;
+}
+
+const partCard = (p, categories, color) => ({
+  part: { ...p, color_id: color ?? undefined },
+  img: p.img ? IMG + p.img : null,
+  title: p.part_num,
+  name: p.name,
+  meta: `${esc(categories.get(p.cat_id) ?? "")} · in ${fmt(p.in_sets)} sets`,
+});
+
+async function runFinder() {
+  if (finderMode === "photo") return renderPhotoResults();
+  const { parts, categories } = await loadCatalog();
+  const m = await matchData;
+  let q, cats;
+  if (finderMode === "pick") {
+    q = pickQuery();
+    cats = shapeCats(pickState.shape);
+  } else {
+    q = parseDescription($("finder-text").value);
+    cats = $("finder-cat").value === "" ? null : new Set([Number($("finder-cat").value)]);
+  }
+  const { list, exact, known, ignored } = searchCatalog(parts, m, q, cats);
 
   const bits = [];
+  if (finderMode === "pick" && pickState.shape) bits.push(`<b>${esc([...SHAPES, OTHER_SHAPE].find((sh) => sh[0] === pickState.shape)[1])}</b>`);
   if (q.color != null) bits.push(`color <b>${esc(colors.get(q.color)?.name)}</b>`);
   if (q.size) bits.push(`size <b>${q.size.join(" × ")}</b>`);
   if (q.studs) bits.push(`<b>${q.studs}</b> studs`);
@@ -607,19 +743,130 @@ async function runFinder() {
   for (const g of known) bits.push(`<b>${esc(g.word)}</b>${g.alts.length > 1 ? ` (${esc(g.alts.filter((a) => a !== g.word).join(" / "))})` : ""}`);
   let parsed = bits.length ? `Looking for ${bits.join(" · ")}` : "Showing the most common parts.";
   if (ignored.length) parsed += ` · ignored ${ignored.map((g) => `“${esc(g.word)}”`).join(", ")}`;
-  if (!exact.length && known.length > 1 && list.length) parsed += " · no part matches every word, so these are the closest";
+  if (!exact && known.length > 1 && list.length) parsed += " · no part matches every word, so these are the closest";
   $("finder-parsed").innerHTML = parsed;
 
-  const shown = list.slice(0, finderLimit);
-  $("finder-grid").innerHTML = shown.map(({ p }, i) => `<li><button type="button" data-i="${i}">
-      ${p.img ? `<img src="${IMG + esc(p.img)}" alt="" loading="lazy" onerror="this.style.visibility='hidden'">` : `<span class="noimg"></span>`}
-      <strong>${esc(p.part_num)}</strong><span>${esc(p.name)}</span>
-      <span class="meta">${esc(categories.get(p.cat_id) ?? "")} · in ${fmt(p.in_sets)} sets</span></button></li>`).join("")
-    || `<li class="empty">No parts match. Try fewer or different words, or another category.</li>`;
-  $("finder-grid")._items = shown.map(({ p }) => ({ ...p, color_id: q.color ?? undefined }));
-  $("finder-more-row").hidden = !list.length;
-  $("finder-count").textContent = `Showing ${fmt(shown.length)} of ${fmt(list.length)} parts`;
-  $("finder-more").hidden = shown.length >= list.length;
+  if (finderMode === "pick") renderPickChips(parts, m, list);
+  renderFinderGrid(list.map((p) => partCard(p, categories, q.color)),
+    "No parts match. Try fewer or different words, or another category.");
+}
+
+// ---------- photo identification ----------
+
+// Scales a photo down to at most 1024 px, which is plenty for recognition and
+// much quicker to upload. Formats the browser can't decode are sent as is.
+async function shrinkPhoto(file) {
+  try {
+    const bmp = await createImageBitmap(file);
+    const scale = Math.min(1, 1024 / Math.max(bmp.width, bmp.height));
+    const canvas = Object.assign(document.createElement("canvas"), {
+      width: Math.round(bmp.width * scale), height: Math.round(bmp.height * scale) });
+    canvas.getContext("2d").drawImage(bmp, 0, 0, canvas.width, canvas.height);
+    return await new Promise((res) => canvas.toBlob(res, "image/jpeg", 0.85)) || file;
+  } catch {
+    return file;
+  }
+}
+
+// Brickognize answers with BrickLink part numbers. Most are Rebrickable numbers
+// too; others differ by a mold letter (BrickLink 3040, Rebrickable 3040a).
+async function toRebrickable(ids) {
+  const { byNum } = await loadCatalog();
+  const variants = (id) => [id, `${id}a`, `${id}b`, `${id}c`, id.replace(/[a-z]$/, "")];
+  const found = new Map();
+  const missing = [];
+  for (const id of ids) {
+    const hit = variants(id).map((v) => byNum.get(v)).find(Boolean);
+    if (hit) found.set(id, hit);
+    else missing.push(id);
+  }
+  if (missing.length) {
+    const rows = await query(
+      `WITH q(id, num) AS (SELECT json_extract(value, '$[0]'), json_extract(value, '$[1]') FROM json_each(?))
+       SELECT q.id, p.pid, p.part_num, p.name, p.cat_id, p.in_sets,
+              (SELECT img FROM part_imgs i WHERE i.pid = p.pid LIMIT 1) AS img
+       FROM q LEFT JOIN part_aliases a ON a.part_num = q.num
+       CROSS JOIN parts p ON p.pid = coalesce(a.pid, (SELECT pid FROM parts x WHERE x.part_num = q.num))`,
+      [JSON.stringify(missing.flatMap((id) => variants(id).map((v) => [id, v])))]);
+    for (const r of rows) if (!found.has(r.id)) found.set(r.id, { ...r, size: null, lower: r.name.toLowerCase() });
+  }
+  return found;
+}
+
+async function identifyPhoto(file) {
+  if (!file) return;
+  const preview = $("photo-preview");
+  if (preview.src) URL.revokeObjectURL(preview.src);
+  preview.src = URL.createObjectURL(file);
+  preview.hidden = false;
+  photoResults = [];
+  $("finder-grid").innerHTML = "";
+  $("finder-more-row").hidden = true;
+  $("finder-parsed").textContent = "Identifying the piece…";
+  try {
+    const form = new FormData();
+    form.append("query_image", await shrinkPhoto(file), "photo.jpg");
+    const res = await fetch("https://api.brickognize.com/predict/parts/", { method: "POST", body: form });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const items = ((await res.json()).items || []).slice(0, 12);
+    const found = await toRebrickable(items.map((it) => it.id));
+    const seen = new Set();
+    for (const it of items) {
+      const p = found.get(it.id);
+      if (p && seen.has(p.pid)) continue;
+      if (p) seen.add(p.pid);
+      photoResults.push({ it, part: p });
+    }
+  } catch (err) {
+    console.error(err);
+    $("finder-parsed").textContent = "Could not reach the recognition service. Check your connection and try again.";
+    return;
+  }
+  renderPhotoResults();
+}
+
+async function renderPhotoResults() {
+  if (!photoResults.length) {
+    $("finder-parsed").textContent = $("photo-preview").hidden ? "" : "No piece recognized. Try a closer photo on a plain background.";
+    $("finder-grid").innerHTML = "";
+    $("finder-more-row").hidden = true;
+    return;
+  }
+  const { categories } = await loadCatalog();
+  $("finder-parsed").textContent = "Best guesses first. Pick yours, then choose its color.";
+  renderFinderGrid(photoResults.map(({ it, part }) => part
+    ? { ...partCard(part, categories), img: it.img_url, meta: `<span class="score">${Math.round(it.score * 100)}% match</span> · in ${fmt(part.in_sets)} sets` }
+    : { part: null, describe: it.name, img: it.img_url, title: it.id, name: it.name,
+        meta: `<span class="score">${Math.round(it.score * 100)}% match</span> · not in any set inventory; search by name` }), "");
+}
+
+function setFinderMode(mode) {
+  finderMode = mode;
+  for (const t of document.querySelectorAll("#finder-dialog .tab")) t.setAttribute("aria-selected", String(t.dataset.mode === mode));
+  for (const pane of document.querySelectorAll("#finder-dialog .finder-pane")) pane.hidden = pane.dataset.pane !== mode;
+  finderLimit = 48;
+  if (mode === "describe") $("finder-text").focus();
+  runFinder();
+}
+
+function onPickChip(e) {
+  const c = e.target.closest(".chip");
+  if (!c) return;
+  const d = c.dataset;
+  if (d.shape) {
+    pickState.shape = pickState.shape === d.shape ? null : d.shape;
+    pickState.size = null;
+    pickState.details = [];
+  } else if (d.size) {
+    pickState.size = pickState.size?.join("x") === d.size ? null : d.size.split("x").map(Number);
+  } else if (d.detail) {
+    pickState.details = pickState.details.includes(d.detail)
+      ? pickState.details.filter((w) => w !== d.detail) : [...pickState.details, d.detail];
+  } else if (d.color) {
+    pickState.color = pickState.color === Number(d.color) ? null : Number(d.color);
+  }
+  finderLimit = 48;
+  runFinder();
 }
 
 let finderTimer;
@@ -635,12 +882,8 @@ function openFinder() {
   const text = $("part-search").value.trim();
   if (text) $("finder-text").value = text;
   $("finder-dialog").showModal();
-  $("finder-text").focus();
   $("finder-parsed").textContent = "Loading the part list…";
-  runFinder().catch((err) => {
-    console.error(err);
-    $("finder-parsed").textContent = "Could not load the part list (data/parts.json.gz).";
-  });
+  setFinderMode(text ? "describe" : finderMode);
 }
 
 // ---------- collection list ----------
@@ -1020,9 +1263,27 @@ $("finder-more").addEventListener("click", () => {
 $("finder-grid").addEventListener("click", (e) => {
   const btn = e.target.closest("button[data-i]");
   if (!btn) return;
+  const card = $("finder-grid")._items[Number(btn.dataset.i)];
+  if (!card.part) {
+    // A photo match we have no inventory part for: search its name instead.
+    $("finder-text").value = card.describe;
+    setFinderMode("describe");
+    return;
+  }
   $("finder-dialog").close();
-  pick($("finder-grid")._items[Number(btn.dataset.i)]);
+  pick(card.part);
 });
+$("finder-dialog").querySelector(".tabs").addEventListener("click", (e) => {
+  const tab = e.target.closest(".tab");
+  if (tab) setFinderMode(tab.dataset.mode);
+});
+$("finder-dialog").querySelector('[data-pane="pick"]').addEventListener("click", onPickChip);
+for (const id of ["photo-camera", "photo-file"]) {
+  $(id).addEventListener("change", (e) => {
+    identifyPhoto(e.target.files[0]);
+    e.target.value = "";
+  });
+}
 $("finder-dialog").addEventListener("click", (e) => {
   if (e.target === e.currentTarget) e.currentTarget.close();
 });
