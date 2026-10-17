@@ -216,6 +216,25 @@ dialog::backdrop { background: rgb(0 0 0 / 0.45); }
 .bl-panel .links { margin: 0 0 8px; }
 .section-label { margin: 18px 0 6px; font-size: 14px; }
 
+.collections { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin-bottom: 12px; }
+.collections select { width: auto; max-width: 100%; flex: 1 1 140px; padding: 5px 8px; font-size: 14px; }
+.collections .spacer { flex: 1 0 0; }
+.banner { margin-top: 10px; padding: 10px 12px; border: 1px solid var(--accent); border-radius: 8px; background: var(--surface);
+  display: flex; flex-wrap: wrap; gap: 8px; align-items: center; font-size: 14px; }
+.banner p { margin: 0; flex: 1 1 240px; }
+.new-sets { font-size: 13px; margin: 0 0 6px; display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.new-sets label { display: flex; gap: 6px; align-items: center; }
+.new-sets input { width: auto; accent-color: var(--accent); }
+.badge { display: inline-block; font-size: 11px; font-weight: 700; color: var(--accent-text); background: var(--accent);
+  border-radius: 4px; padding: 0 5px; margin-left: 6px; vertical-align: 1px; }
+.sort-summary { display: grid; gap: 4px; margin: 8px 0 14px; font-size: 13px; }
+.sort-summary .row { display: grid; grid-template-columns: minmax(90px, 160px) 1fr auto; gap: 8px; align-items: center; }
+.sort-summary .bar { margin: 0; }
+.bins { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); }
+.bins li { border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; font-size: 13px; }
+.bins b { display: block; font-size: 14px; }
+.bins .meta { color: var(--muted); }
+.bins .swatches { margin-top: 4px; }
 .pick-controls { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin: 8px 0 12px; font-size: 14px; }
 .pick-controls label { display: flex; gap: 6px; align-items: center; }
 .pick-controls input { width: auto; accent-color: var(--accent); }
@@ -247,5 +266,8 @@ dialog::backdrop { background: rgb(0 0 0 / 0.45); }
   #print-area .box { font-size: 14pt; width: 18pt; }
   #print-area .qty { font-weight: 700; text-align: right; white-space: nowrap; }
   #print-area .missing { color: #000; font-weight: 700; }
+  #print-area .labels { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6pt; }
+  #print-area .label { border: 1pt dashed #888; padding: 8pt; break-inside: avoid; }
+  #print-area .label b { display: block; font-size: 13pt; }
 }
 .foot { color: var(--muted); font-size: 12px; padding-top: 20px; padding-bottom: 32px; }
