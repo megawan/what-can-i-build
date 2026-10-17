@@ -42,7 +42,7 @@ async function init() {
     );
     db = worker.db;
     api = worker.worker;
-    for (const c of await query("SELECT id, name, rgb, is_trans FROM colors")) colors.set(c.id, c);
+    for (const c of await query("SELECT id, name, rgb, is_trans, bl_id FROM colors")) colors.set(c.id, c);
     for (const t of await query("SELECT id, name, parent_id FROM themes")) themes.set(t.id, t);
     const meta = Object.fromEntries((await query("SELECT key, value FROM meta")).map((r) => [r.key, r.value]));
     totalSets = Number(meta.sets || 0);
@@ -1166,11 +1166,13 @@ async function openSet(r) {
           <a href="https://www.lego.com/service/buildinginstructions/${encodeURIComponent(instr)}" target="_blank" rel="noopener">Instructions</a>
           <a href="https://rebrickable.com/sets/${encodeURIComponent(r.set_num)}/" target="_blank" rel="noopener">Rebrickable</a>
           <a href="https://www.bricklink.com/v2/catalog/catalogitem.page?S=${encodeURIComponent(r.set_num)}" target="_blank" rel="noopener">BrickLink</a>
-          ${missing.length ? `<a href="#" id="dl-missing">Download missing (CSV)</a>` : ""}
+          ${missing.length ? `<a href="#" id="dl-missing">Download missing (CSV)</a>
+            <button type="button" class="ghost" id="bl-wanted">BrickLink wanted list</button>` : ""}
           <button type="button" class="ghost" id="own-set">I own this set</button>
         </div>
       </div>
     </div>
+    <div class="bl-panel" id="bl-panel" hidden></div>
     ${missing.length ? `<h4 class="section-label">Missing pieces (${fmt(missing.length)} kinds)</h4>${table(missing)}` : `<p>You have every piece for this set.</p>`}
     ${owned.length ? `<details><summary class="section-label">Pieces you have (${fmt(owned.length)} kinds)</summary>${table(owned)}</details>` : ""}`;
 
@@ -1183,6 +1185,72 @@ async function openSet(r) {
     e.preventDefault();
     download(`${r.set_num}-missing.csv`, toCsv(missing.map((p) => [p.part_num, p.color_id, p.qty - p.have])));
   };
+  const bl = $("bl-wanted");
+  if (bl) bl.onclick = () => showWantedList(missing, r);
+}
+
+// ---------- BrickLink wanted list ----------
+
+// BrickLink's wanted list XML for the missing pieces, in BrickLink part and
+// color numbers. Parts without a known BrickLink number keep their Rebrickable
+// number, which BrickLink flags on upload so it can be fixed there.
+async function wantedListXml(lines, remark) {
+  const rows = await query(
+    "SELECT b.pid, b.bl_id FROM json_each(?) j CROSS JOIN bl_parts b ON b.pid = j.value",
+    [JSON.stringify([...new Set(lines.map((p) => p.pid))])]);
+  const blPart = new Map(rows.map((r) => [r.pid, r.bl_id]));
+  const items = new Map();
+  const unmapped = [];
+  for (const p of lines) {
+    const id = blPart.get(p.pid);
+    const color = colors.get(p.color_id)?.bl_id;
+    if (!id || color == null) unmapped.push(p);
+    // Without a BrickLink color, lines stay apart and name their color.
+    const k = `${id ?? p.part_num}|${color ?? `rb${p.color_id}`}`;
+    const note = color == null ? ` · Rebrickable color ${colors.get(p.color_id)?.name ?? p.color_id}` : "";
+    const item = items.get(k) || { id: id ?? p.part_num, color, qty: 0, remark: remark + note };
+    item.qty += p.qty - p.have;
+    items.set(k, item);
+  }
+  const xml = [...items.values()].map((it) => `  <ITEM>
+    <ITEMTYPE>P</ITEMTYPE>
+    <ITEMID>${esc(it.id)}</ITEMID>
+${it.color != null ? `    <COLOR>${it.color}</COLOR>\n` : ""}    <MINQTY>${it.qty}</MINQTY>
+    <REMARKS>${esc(it.remark)}</REMARKS>
+  </ITEM>`).join("\n");
+  return { xml: `<INVENTORY>\n${xml}\n</INVENTORY>\n`, count: items.size, unmapped };
+}
+
+async function showWantedList(missing, r) {
+  const panel = $("bl-panel");
+  panel.hidden = false;
+  if ([...colors.values()].every((c) => c.bl_id == null)) {
+    panel.innerHTML = `<p>This copy of the database has no BrickLink numbers, so a wanted list can't be made. Use the CSV instead.</p>`;
+    return;
+  }
+  panel.innerHTML = `<p>Preparing the wanted list…</p>`;
+  const { xml, count, unmapped } = await wantedListXml(missing, `For ${r.set_num} ${r.name}`);
+  const pieces = missing.reduce((n, p) => n + p.qty - p.have, 0);
+  panel.innerHTML = `
+    <p><b>Wanted list ready:</b> ${fmt(count)} lots, ${fmt(pieces)} pieces.
+      ${unmapped.length ? `<span class="missing">${fmt(unmapped.length)} with no BrickLink number or color
+        (${[...new Set(unmapped.map((p) => p.part_num))].slice(0, 5).map(esc).join(", ")}${new Set(unmapped.map((p) => p.part_num)).size > 5 ? ", …" : ""}); BrickLink will ask you to fix those.</span>` : ""}</p>
+    <div class="links">
+      <button type="button" id="bl-copy">Copy XML</button>
+      <button type="button" class="ghost" id="bl-download">Download XML</button>
+      <a href="https://www.bricklink.com/v2/wanted/upload.page" target="_blank" rel="noopener">Open BrickLink upload page</a>
+    </div>
+    <p class="finder-help">On BrickLink's upload page, paste the XML (or choose the downloaded file), pick the wanted list to add to, and upload.
+      Then use the list to find shops that sell these pieces.</p>`;
+  $("bl-copy").onclick = async () => {
+    try {
+      await navigator.clipboard.writeText(xml);
+      $("bl-copy").textContent = "Copied";
+    } catch {
+      download(`${r.set_num}-wanted.xml`, xml, "application/xml");
+    }
+  };
+  $("bl-download").onclick = () => download(`${r.set_num}-wanted.xml`, xml, "application/xml");
 }
 
 // ---------- import / export ----------
@@ -1191,8 +1259,8 @@ function toCsv(rows) {
   return "Part,Color,Quantity\n" + rows.map((r) => r.join(",")).join("\n") + "\n";
 }
 
-function download(name, text) {
-  const url = URL.createObjectURL(new Blob([text], { type: "text/csv" }));
+function download(name, text, type = "text/csv") {
+  const url = URL.createObjectURL(new Blob([text], { type }));
   const a = Object.assign(document.createElement("a"), { href: url, download: name });
   a.click();
   setTimeout(() => URL.revokeObjectURL(url), 1000);
