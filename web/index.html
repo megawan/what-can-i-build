@@ -80,6 +80,24 @@
       <div class="panel-head">
         <h2 id="results-h">Sets you can build</h2>
       </div>
+      <section class="plan" aria-labelledby="plan-h">
+        <div class="plan-head">
+          <h3 id="plan-h">Build plan <span class="count" id="plan-count">0</span></h3>
+          <div class="actions">
+            <select id="plan-threshold" aria-label="Sets to suggest">
+              <option value="1">Complete sets</option>
+              <option value="0.9">90%+ complete</option>
+              <option value="0.75">75%+ complete</option>
+            </select>
+            <button type="button" class="ghost" id="plan-suggest" disabled>Suggest sets</button>
+            <button type="button" class="ghost danger" id="plan-clear" hidden>Clear plan</button>
+          </div>
+        </div>
+        <p class="plan-help" id="plan-empty">Plan several sets at once. Add sets with <b>+</b>, or let <b>Suggest sets</b> pick sets your pieces can build together. Each piece counts toward one set only, in plan order.</p>
+        <ol class="plan-list" id="plan-list"></ol>
+        <div class="plan-total" id="plan-total" hidden></div>
+        <div class="bl-panel" id="plan-bl" hidden></div>
+      </section>
       <div class="field browse">
         <input id="set-filter" type="search" placeholder="Search all sets by name, number or theme" aria-label="Search all sets" disabled>
       </div>
@@ -119,6 +137,7 @@
           </select>
         </label>
       </div>
+      <p class="plan-note" id="plan-note" hidden></p>
       <ol class="results" id="results"></ol>
       <p class="empty" id="results-empty">Add some pieces to see matching sets.</p>
       <div class="more" id="results-more" hidden>
