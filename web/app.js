@@ -955,12 +955,13 @@ function scheduleResults() {
 
 function matchMode() { return $("match-mode").value; }
 
-const FILTER_IDS = ["match-mode", "min-size", "theme-filter", "year-from", "year-to", "max-missing"];
+const FILTER_IDS = ["match-mode", "min-size", "max-size", "theme-filter", "year-from", "year-to", "max-missing"];
 
 function readFilters() {
   const num = (id) => ($(id).value === "" ? null : Number($(id).value));
   return {
-    minSize: Number($("min-size").value),
+    minSize: Number($("min-size").value) || 0,
+    maxSize: num("max-size"),
     theme: num("theme-filter"),
     yearFrom: num("year-from"),
     yearTo: num("year-to"),
@@ -1054,7 +1055,7 @@ async function refreshResults() {
 }
 
 function passesFilters(s, got, f) {
-  if (s.total < f.minSize) return false;
+  if (s.total < f.minSize || (f.maxSize != null && s.total > f.maxSize)) return false;
   if (f.theme != null && s.root_theme !== f.theme) return false;
   if ((f.yearFrom != null && s.year < f.yearFrom) || (f.yearTo != null && s.year > f.yearTo)) return false;
   return f.maxMissing == null || s.total - got <= f.maxMissing;
@@ -1591,6 +1592,14 @@ for (const id of FILTER_IDS) {
     saveFilters();
     resultsLimit = MAX_RESULTS;
     refreshResults();
+  });
+}
+// Number fields apply while typing, not only when they lose focus.
+let numberTimer;
+for (const id of ["min-size", "max-size", "year-from", "year-to"]) {
+  $(id).addEventListener("input", () => {
+    clearTimeout(numberTimer);
+    numberTimer = setTimeout(() => $(id).dispatchEvent(new Event("change")), 400);
   });
 }
 let browseTimer;

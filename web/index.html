@@ -109,13 +109,10 @@
             <option value="similar">Any color + similar parts</option>
           </select>
         </label>
-        <label>Min. set size
-          <select id="min-size">
-            <option value="1">Any</option>
-            <option value="25" selected>25+ pieces</option>
-            <option value="100">100+ pieces</option>
-            <option value="300">300+ pieces</option>
-          </select>
+        <label>Pieces
+          <input type="number" id="min-size" value="25" min="1" placeholder="min" aria-label="Fewest pieces in a set">
+          –
+          <input type="number" id="max-size" min="1" placeholder="max" aria-label="Most pieces in a set">
         </label>
         <label>Theme
           <select id="theme-filter"><option value="">All</option></select>

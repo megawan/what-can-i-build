@@ -29,7 +29,7 @@ Sets are ranked by the share of their pieces you have. The bar fills green at 10
   - **Any color + similar parts**: also alternates and printed or patterned versions of a part.
 
   In the stricter modes, results show how many more pieces other colors or similar parts would cover, such as *+15 with other colors or similar parts*.
-- **Min. set size**, **Theme**, **Years** and **Missing** (how many pieces may be missing) narrow the list. Your choices are remembered.
+- **Pieces** (the set size: fewest and most pieces, 25 or more by default; leave a box empty for no limit), **Theme**, **Years** and **Missing** (how many pieces may be missing) narrow the list. For example, Pieces 25 – 100 shows only sets of 25 to 100 pieces. Your choices are remembered.
 - **Search all sets** (the box above the results) finds any set by name, number or theme and shows how much of it you have, even 0%. Use **Show more** to see more results.
 
 ### 3. Look at a set
@@ -41,7 +41,7 @@ Click a result to see every missing piece and how many you have of each. Under a
 The **Build plan** box above the results lets you build several sets from one collection without counting a piece twice. Pieces go to the sets in plan order, so the first set gets first pick.
 
 - Add sets with the **+** next to a result, or with **Add to build plan** in a set's details. Remove a set with ×.
-- **Suggest sets** fills the plan for you. Choose *Complete sets*, *90%+ complete* or *75%+ complete*, and it keeps adding the set that uses the most of your remaining pieces until no set reaches that level. It respects the result filters (minimum size, theme, years, missing), so you can steer it, for example to 100+ piece City sets.
+- **Suggest sets** fills the plan for you. Choose *Complete sets*, *90%+ complete* or *75%+ complete*, and it keeps adding the set that uses the most of your remaining pieces until no set reaches that level. It respects the result filters (pieces, theme, years, missing), so you can steer it, for example to City sets of 100 to 300 pieces.
 - While the plan has sets, the results are ranked with only the pieces the plan leaves free, so you can see what else fits.
 - Click a planned set to see its pieces, counting only what the sets before it left over.
 - The plan's totals show how many of your pieces it uses and how many are missing across all its sets. **Download missing (CSV)** and **BrickLink wanted list** there cover the whole plan at once.
