@@ -35,7 +35,7 @@
           <label for="part-search">Part</label>
           <input id="part-search" type="search" placeholder="Name, part number (3001) or element ID" disabled>
           <ul class="suggestions" id="suggestions" role="listbox" hidden></ul>
-          <button type="button" class="link-btn" id="finder-btn" disabled>Don't know the part number or name? Describe it</button>
+          <button type="button" class="link-btn" id="finder-btn" disabled>Don't know the part number or name? Find it by look, description or photo</button>
         </div>
         <div class="picked" id="picked" hidden>
           <img id="picked-img" alt="">
@@ -135,14 +135,44 @@
 
   <dialog id="finder-dialog" aria-labelledby="finder-h">
     <form method="dialog" class="dialog-close"><button aria-label="Close">×</button></form>
-    <h3 id="finder-h">Find a part by description</h3>
-    <p class="finder-help">Describe the piece in English or Indonesian: its shape, size, color and anything special about it.
-      For example <em>red flat 2x2 with hole</em>, <em>bata miring 2x1 biru</em> or <em>round plate with 4 studs</em>.
-      Count the size in studs, the bumps on top.</p>
-    <div class="finder-controls">
-      <input id="finder-text" type="search" placeholder="Describe the piece…" aria-label="Description">
-      <select id="finder-cat" aria-label="Category"><option value="">All categories</option></select>
+    <h3 id="finder-h">Find a part</h3>
+    <div class="tabs" role="tablist">
+      <button type="button" role="tab" class="tab" data-mode="pick" aria-selected="true">Pick what it looks like</button>
+      <button type="button" role="tab" class="tab" data-mode="describe" aria-selected="false">Describe it</button>
+      <button type="button" role="tab" class="tab" data-mode="photo" aria-selected="false">Use a photo</button>
     </div>
+
+    <div class="finder-pane" data-pane="pick">
+      <p class="finder-help">Choose what matches your piece, one step at a time. Each step narrows the pictures below; skip any step you're unsure of.</p>
+      <div class="chip-step"><span class="step-label">Shape</span><div class="chips" id="pick-shapes"></div></div>
+      <div class="chip-step"><span class="step-label">Size <small>(studs on top, e.g. 2 × 4)</small></span><div class="chips" id="pick-sizes"></div></div>
+      <div class="chip-step"><span class="step-label">Details</span><div class="chips" id="pick-details"></div></div>
+      <div class="chip-step"><span class="step-label">Color</span><div class="chips" id="pick-colors"></div></div>
+    </div>
+
+    <div class="finder-pane" data-pane="describe" hidden>
+      <p class="finder-help">Describe the piece in English or Indonesian: its shape, size, color and anything special about it.
+        For example <em>red flat 2x2 with hole</em>, <em>bata miring 2x1 biru</em> or <em>round plate with 4 studs</em>.
+        Count the size in studs, the bumps on top.</p>
+      <div class="finder-controls">
+        <input id="finder-text" type="search" placeholder="Describe the piece…" aria-label="Description">
+        <select id="finder-cat" aria-label="Category"><option value="">All categories</option></select>
+      </div>
+    </div>
+
+    <div class="finder-pane" data-pane="photo" hidden>
+      <p class="finder-help">Photograph one piece on a plain background, filling most of the picture.</p>
+      <div class="photo-actions">
+        <label class="button">Take a photo<input type="file" id="photo-camera" accept="image/*" capture="environment" hidden></label>
+        <label class="ghost button">Choose a photo<input type="file" id="photo-file" accept="image/*" hidden></label>
+        <img id="photo-preview" alt="" hidden>
+      </div>
+      <p class="photo-note">Photos are sent to <a href="https://brickognize.com/" target="_blank" rel="noopener">Brickognize</a>,
+        a free recognition service that is not part of this site. Under
+        <a href="https://brickognize.com/terms-of-service/" target="_blank" rel="noopener">its terms</a> it may keep uploaded
+        photos and use them to train its models, so don't include anything personal.</p>
+    </div>
+
     <p class="finder-parsed" id="finder-parsed"></p>
     <ul class="finder-grid" id="finder-grid"></ul>
     <div class="more" id="finder-more-row" hidden>
