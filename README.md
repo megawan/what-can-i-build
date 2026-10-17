@@ -14,10 +14,10 @@ Live at **https://megawan.github.io/what-can-i-build/**
   - **Describe it**: type a description in English or Indonesian, such as `red flat 2x2 with hole` or `bata miring 2x1 biru`. Count sizes in studs, the bumps on top. The line under the box shows how your words were understood.
   - **Use a photo**: take or choose a photo of one piece on a plain background, then pick the best guess and choose its color. The photo is sent to [Brickognize](https://brickognize.com/), a separate free service, which may keep it.
 - **Add a whole set you own**: type its number (`10696`) or name under *Add a set you own*, pick it, set the number of copies, and click **Add set**. You can also click **I own this set** in a set's details.
-- **Import a CSV** in Rebrickable's `Part,Color,Quantity` format, for example a parts list exported from your Rebrickable collection. Spare parts are skipped.
+- **Import** a CSV in Rebrickable's `Part,Color,Quantity` format (for example a parts list exported from your Rebrickable collection; spare parts are skipped), or a **BrickLink XML** file such as a wanted list or store inventory. BrickLink part and color numbers are mapped to Rebrickable's, and sets in the file are added whole. Minifigs are skipped, because their BrickLink and Rebrickable numbers don't match. The status line says what was imported and what was skipped.
 - **Try a sample** loads a Medium Creative Brick Box (10696) to see how it works.
 
-Change a quantity in the list, remove a part with ×, or start over with **Clear**. Your list stays in this browser; use **Export** to keep a copy or move it to another device, and **Import CSV** to load it back.
+Change a quantity in the list, remove a part with ×, or start over with **Clear**. Your list stays in this browser; use **Export** to keep a copy or move it to another device, and **Import** to load it back.
 
 ### 2. See which sets you can build
 
@@ -36,6 +36,8 @@ Sets are ranked by the share of their pieces you have. The bar fills green at 10
 
 Click a result to see every missing piece and how many you have of each. Under a missing piece, *Using …* or *Could use …* names the pieces of yours that could stand in, in another color or as a similar part. The links open the building instructions on LEGO.com and the set on Rebrickable and BrickLink.
 
+**Pick list**, in a set's details, lists every piece of the set grouped by color (largest groups first), then by category, with a box to tick as you take each piece out of storage. Pieces you don't have are marked as missing. Ticks are saved in the browser, **Hide ticked** shows only what's left, and **Print** gives a paper checklist.
+
 ### 4. Plan several sets at once
 
 The **Build plan** box above the results lets you build several sets from one collection without counting a piece twice. Pieces go to the sets in plan order, so the first set gets first pick.
@@ -44,7 +46,7 @@ The **Build plan** box above the results lets you build several sets from one co
 - **Suggest sets** fills the plan for you. Choose *Complete sets*, *90%+ complete* or *75%+ complete*, and it keeps adding the set that uses the most of your remaining pieces until no set reaches that level. It respects the result filters (pieces, theme, years, missing), so you can steer it, for example to City sets of 100 to 300 pieces.
 - While the plan has sets, the results are ranked with only the pieces the plan leaves free, so you can see what else fits.
 - Click a planned set to see its pieces, counting only what the sets before it left over.
-- The plan's totals show how many of your pieces it uses and how many are missing across all its sets. **Download missing (CSV)** and **BrickLink wanted list** there cover the whole plan at once.
+- The plan's totals show how many of your pieces it uses and how many are missing across all its sets. **Download missing (CSV)** and **BrickLink wanted list** there cover the whole plan at once. **Pick list** there gives one checklist per set, in plan order, with the pieces the plan gives that set.
 
 ### 5. Buy the missing pieces
 
