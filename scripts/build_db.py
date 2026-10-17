@@ -11,14 +11,18 @@ Steps:
      part, minifig parts expanded into the sets that include them, spares dropped.
   3. Split the final file into fixed-size chunks under --out, plus a config.json
      that sql.js-httpvfs reads, so the browser fetches only the pages a query needs.
+  4. Write match.bin.gz under --out: every set's part list packed by part and
+     color, which the browser downloads once and matches against in memory.
 """
 
 import argparse
+import array
 import csv
 import gzip
 import json
 import os
 import sqlite3
+import struct
 import sys
 import urllib.request
 from datetime import datetime, timezone
@@ -39,6 +43,8 @@ TABLES = [
 IMG_PREFIX = "https://cdn.rebrickable.com/media/"
 PAGE_SIZE = 4096
 CHUNK_SIZE = 10 * 1024 * 1024  # well under GitHub's 100 MB per-file limit
+SAMPLE_SET = "10696-1"  # Medium Creative Brick Box, behind the "Try a sample" button
+COLOR_BITS = 14  # match.bin keys are pid << COLOR_BITS | (color_id + 1); -1 is "Unknown"
 
 csv.field_size_limit(sys.maxsize)
 
@@ -109,9 +115,9 @@ def build(staging: sqlite3.Connection, out_path: Path) -> None:
             WITHOUT ROWID;
         CREATE TABLE sets (sid INTEGER PRIMARY KEY, set_num TEXT NOT NULL UNIQUE, name TEXT NOT NULL,
                            year INTEGER, theme_id INTEGER, total INTEGER NOT NULL);
-        -- Clustered by part so "which sets use the parts I own" reads contiguous pages.
-        CREATE TABLE set_parts (pid INTEGER NOT NULL, color_id INTEGER NOT NULL, sid INTEGER NOT NULL,
-                                qty INTEGER NOT NULL, PRIMARY KEY (pid, color_id, sid)) WITHOUT ROWID;
+        -- Clustered by set for the set detail view; matching uses match.bin.gz instead.
+        CREATE TABLE set_parts (sid INTEGER NOT NULL, pid INTEGER NOT NULL, color_id INTEGER NOT NULL,
+                                qty INTEGER NOT NULL, PRIMARY KEY (sid, pid, color_id)) WITHOUT ROWID;
         CREATE TABLE part_imgs (pid INTEGER NOT NULL, color_id INTEGER NOT NULL, img TEXT NOT NULL,
                                 PRIMARY KEY (pid, color_id)) WITHOUT ROWID;
         """
@@ -211,7 +217,7 @@ def build(staging: sqlite3.Connection, out_path: Path) -> None:
     )
     db.executemany(
         "INSERT INTO set_parts VALUES (?, ?, ?, ?)",
-        sorted((pid_of[p], c, sid_of[s], q) for (p, c, s), q in agg.items() if s in sid_of),
+        sorted((sid_of[s], pid_of[p], c, q) for (p, c, s), q in agg.items() if s in sid_of),
     )
     db.executemany(
         "INSERT INTO part_imgs VALUES (?, ?, ?)",
@@ -220,8 +226,6 @@ def build(staging: sqlite3.Connection, out_path: Path) -> None:
 
     db.executescript(
         """
-        -- Covering index for "list every part of one set".
-        CREATE INDEX set_parts_by_set ON set_parts (sid, qty);
         CREATE VIRTUAL TABLE parts_fts USING fts5 (part_num, name, content='parts', content_rowid='pid');
         INSERT INTO parts_fts (parts_fts) VALUES ('rebuild');
         INSERT INTO parts_fts (parts_fts) VALUES ('optimize');
@@ -269,6 +273,72 @@ def split(db_path: Path, out_dir: Path) -> None:
     print(f"split into {i} chunk(s) in {out_dir} ({size / 1e6:.1f} MB total)", flush=True)
 
 
+def write_match(db_path: Path, out_dir: Path) -> None:
+    """Pack what matching needs into one gzipped file, read by web/app.js:
+
+        "WCIB", uint32 header length, header JSON (space-padded to 4 bytes):
+            {built_at, groups, entries,
+             sets: [[set_num, name, year, theme_id, total], ...]   (index = sid - 1),
+             sample: [[pid, part_num, name, color_id, qty, img], ...]}
+        uint32[groups]   key = pid << COLOR_BITS | (color_id + 1), delta from the previous key
+        uint16[groups]   number of sets in each (pid, color_id) group
+        uint16[entries]  sid, delta from the previous entry in the same group
+        uint16[entries]  quantity
+
+    Numbers are little-endian. Groups are sorted by key, entries by sid.
+    """
+    db = sqlite3.connect(db_path)
+    built_at = db.execute("SELECT value FROM meta WHERE key = 'built_at'").fetchone()[0]
+    sets = db.execute("SELECT sid, set_num, name, year, theme_id, total FROM sets ORDER BY sid").fetchall()
+    assert [r[0] for r in sets] == list(range(1, len(sets) + 1)), "sids must be 1..n"
+    assert len(sets) < 1 << 16, "sids no longer fit in uint16"
+    sample = db.execute(
+        """SELECT sp.pid, p.part_num, p.name, sp.color_id, sp.qty,
+                  coalesce(i.img, (SELECT img FROM part_imgs j WHERE j.pid = sp.pid LIMIT 1))
+           FROM sets s JOIN set_parts sp ON sp.sid = s.sid JOIN parts p ON p.pid = sp.pid
+           LEFT JOIN part_imgs i ON i.pid = sp.pid AND i.color_id = sp.color_id
+           WHERE s.set_num = ?""",
+        (SAMPLE_SET,),
+    ).fetchall()
+
+    keys, counts, sids, qtys = array.array("I"), array.array("H"), array.array("H"), array.array("H")
+    prev_key = prev_sid = 0
+    for pid, color_id, sid, qty in db.execute(
+        "SELECT pid, color_id, sid, qty FROM set_parts ORDER BY pid, color_id, sid"
+    ):
+        assert -1 <= color_id < (1 << COLOR_BITS) - 1 and qty < 1 << 16
+        key = pid << COLOR_BITS | (color_id + 1)
+        if not counts or key != prev_key:
+            keys.append(key - prev_key)
+            counts.append(0)
+            prev_key, prev_sid = key, 0
+        counts[-1] += 1
+        sids.append(sid - prev_sid)
+        qtys.append(qty)
+        prev_sid = sid
+    db.close()
+
+    header = json.dumps(
+        {
+            "built_at": built_at,
+            "groups": len(keys),
+            "entries": len(sids),
+            "sets": [list(r[1:]) for r in sets],
+            "sample": [list(r) for r in sample],
+        },
+        separators=(",", ":"),
+        ensure_ascii=False,
+    ).encode()
+    header += b" " * (-len(header) % 4)
+    if sys.byteorder != "little":
+        for a in (keys, counts, sids, qtys):
+            a.byteswap()
+    body = b"".join([b"WCIB", struct.pack("<I", len(header)), header, *(a.tobytes() for a in (keys, counts, sids, qtys))])
+    out = out_dir / "match.bin.gz"
+    out.write_bytes(gzip.compress(body, 9, mtime=0))
+    print(f"wrote {out} ({len(keys):,} groups, {len(sids):,} entries, {out.stat().st_size / 1e6:.1f} MB)", flush=True)
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--raw", default="build/raw", type=Path, help="where to cache the downloaded CSVs")
@@ -291,6 +361,7 @@ def main() -> None:
     staging.close()
     os.remove(staging_path)
     split(final_path, args.out)
+    write_match(final_path, args.out)
 
 
 if __name__ == "__main__":
