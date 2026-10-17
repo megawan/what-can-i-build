@@ -79,8 +79,17 @@
       <div class="panel-head">
         <h2 id="results-h">Sets you can build</h2>
       </div>
+      <div class="field browse">
+        <input id="set-filter" type="search" placeholder="Search all sets by name, number or theme" aria-label="Search all sets" disabled>
+      </div>
       <div class="filters">
-        <label class="toggle"><input type="checkbox" id="any-color"> Ignore colors</label>
+        <label>Match
+          <select id="match-mode">
+            <option value="exact">Exact colors</option>
+            <option value="color">Any color</option>
+            <option value="similar">Any color + similar parts</option>
+          </select>
+        </label>
         <label>Min. set size
           <select id="min-size">
             <option value="1">Any</option>
@@ -111,6 +120,10 @@
       </div>
       <ol class="results" id="results"></ol>
       <p class="empty" id="results-empty">Add some pieces to see matching sets.</p>
+      <div class="more" id="results-more" hidden>
+        <span id="results-count"></span>
+        <button type="button" class="ghost" id="more-btn">Show more</button>
+      </div>
     </section>
   </main>
 
