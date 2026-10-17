@@ -4,8 +4,12 @@
 Usage:
     python3 -I scripts/build_db.py [--raw build/raw] [--out web/data] [--refresh]
 
+Set REBRICKABLE_API_KEY to also fetch BrickLink part and color numbers (for
+the BrickLink wanted list export); they are not in the CSV dumps.
+
 Steps:
-  1. Download the gzipped CSVs from Rebrickable into --raw (cached unless --refresh).
+  1. Download the gzipped CSVs from Rebrickable into --raw (cached unless --refresh),
+     and with an API key, the BrickLink numbers (cached for a week).
   2. Load them into a staging database and build a compact final database:
      integer ids instead of repeated part strings, mold variants folded into one
      part, minifig parts expanded into the sets that include them, spares dropped.
@@ -26,11 +30,16 @@ import os
 import sqlite3
 import struct
 import sys
+import time
+import urllib.error
 import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 
 BASE_URL = "https://cdn.rebrickable.com/media/downloads/"
+API_URL = "https://rebrickable.com/api/v3/lego/"
+BRICKLINK_IDS = "bricklink_ids.json"
+BRICKLINK_MAX_AGE = 7 * 24 * 3600
 TABLES = [
     "themes",
     "colors",
@@ -66,6 +75,62 @@ def download(raw_dir: Path, refresh: bool) -> None:
             while chunk := resp.read(1 << 20):
                 fh.write(chunk)
         tmp.replace(dest)
+
+
+def api_pages(path: str, key: str):
+    """Yield every result of a paginated Rebrickable API list, at the one
+    request a second the API allows, waiting out any 429 it still sends."""
+    url = f"{API_URL}{path}?page_size=1000"
+    while url:
+        req = urllib.request.Request(url, headers={"Authorization": f"key {key}", "User-Agent": "what-can-i-build"})
+        try:
+            with urllib.request.urlopen(req) as resp:
+                page = json.load(resp)
+        except urllib.error.HTTPError as err:
+            if err.code != 429:
+                raise
+            wait = int(err.headers.get("Retry-After") or 10)
+            print(f"throttled, waiting {wait} s", flush=True)
+            time.sleep(wait + 1)
+            continue
+        yield from page["results"]
+        url = page.get("next")
+        time.sleep(1.1)
+
+
+def bricklink_ids(ext) -> list:
+    """The BrickLink ids of an external_ids entry: a list for parts, and a dict
+    with an "ext_ids" list for colors."""
+    if isinstance(ext, dict):
+        ext = ext.get("ext_ids")
+    return [str(k) for k in ext or []]
+
+
+def download_bricklink_ids(raw_dir: Path, refresh: bool) -> None:
+    """Fetch Rebrickable's BrickLink mappings for colors and parts into
+    raw_dir/bricklink_ids.json: {"colors": {id: [bl ids]}, "parts": {part_num: [bl ids]}}."""
+    dest = raw_dir / BRICKLINK_IDS
+    key = os.environ.get("REBRICKABLE_API_KEY", "").strip()
+    fresh = dest.exists() and time.time() - dest.stat().st_mtime < BRICKLINK_MAX_AGE
+    if fresh and not refresh:
+        return
+    if not key:
+        print("REBRICKABLE_API_KEY not set: skipping BrickLink numbers", flush=True)
+        return
+    print("fetching BrickLink numbers from the Rebrickable API", flush=True)
+    colors = {
+        str(c["id"]): bricklink_ids(c.get("external_ids", {}).get("BrickLink"))
+        for c in api_pages("colors/", key)
+    }
+    parts = {}
+    for p in api_pages("parts/", key):
+        ids = bricklink_ids(p.get("external_ids", {}).get("BrickLink"))
+        if ids:
+            parts[p["part_num"]] = ids
+    tmp = dest.with_suffix(".part")
+    tmp.write_text(json.dumps({"colors": colors, "parts": parts}))
+    tmp.replace(dest)
+    print(f"BrickLink numbers: {sum(map(bool, colors.values())):,} colors, {len(parts):,} parts", flush=True)
 
 
 def load_staging(db: sqlite3.Connection, raw_dir: Path) -> None:
@@ -124,7 +189,7 @@ def similar_families(staging: sqlite3.Connection, canon, pid_of: dict) -> list:
     return sorted((p, find(p)) for p in parent)
 
 
-def build(staging: sqlite3.Connection, out_path: Path) -> None:
+def build(staging: sqlite3.Connection, out_path: Path, raw_dir: Path) -> None:
     if out_path.exists():
         out_path.unlink()
     db = sqlite3.connect(out_path)
@@ -134,7 +199,9 @@ def build(staging: sqlite3.Connection, out_path: Path) -> None:
         """
         CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT) WITHOUT ROWID;
         CREATE TABLE themes (id INTEGER PRIMARY KEY, name TEXT NOT NULL, parent_id INTEGER);
-        CREATE TABLE colors (id INTEGER PRIMARY KEY, name TEXT NOT NULL, rgb TEXT, is_trans INTEGER);
+        CREATE TABLE colors (id INTEGER PRIMARY KEY, name TEXT NOT NULL, rgb TEXT, is_trans INTEGER, bl_id INTEGER);
+        -- BrickLink part numbers, for parts whose BrickLink number is known.
+        CREATE TABLE bl_parts (pid INTEGER PRIMARY KEY, bl_id TEXT NOT NULL);
         -- pid is the canonical (mold-family root) part id; aliases point variants at it.
         CREATE TABLE part_categories (id INTEGER PRIMARY KEY, name TEXT NOT NULL);
         CREATE TABLE parts (pid INTEGER PRIMARY KEY, part_num TEXT NOT NULL UNIQUE, name TEXT NOT NULL,
@@ -159,7 +226,7 @@ def build(staging: sqlite3.Connection, out_path: Path) -> None:
         ((int(i), n, int(p) if p else None) for i, n, p in staging.execute("SELECT id, name, parent_id FROM raw_themes")),
     )
     db.executemany(
-        "INSERT INTO colors VALUES (?, ?, ?, ?)",
+        "INSERT INTO colors (id, name, rgb, is_trans) VALUES (?, ?, ?, ?)",
         (
             (int(i), n, rgb, 1 if t == "True" else 0)
             for i, n, rgb, t in staging.execute("SELECT id, name, rgb, is_trans FROM raw_colors")
@@ -256,6 +323,7 @@ def build(staging: sqlite3.Connection, out_path: Path) -> None:
         sorted((sid_of[s], pid_of[p], c, q) for (p, c, s), q in agg.items() if s in sid_of),
     )
     db.executemany("INSERT INTO similar_parts VALUES (?, ?)", similar_families(staging, canon, pid_of))
+    add_bricklink_ids(db, raw_dir / BRICKLINK_IDS, canon, pid_of)
     db.executemany(
         "INSERT INTO part_imgs VALUES (?, ?, ?)",
         sorted((pid_of[p], c, i) for (p, c), i in imgs.items()),
@@ -308,6 +376,25 @@ def split(db_path: Path, out_dir: Path) -> None:
     }
     (out_dir / "config.json").write_text(json.dumps(config, indent=2) + "\n")
     print(f"split into {i} chunk(s) in {out_dir} ({size / 1e6:.1f} MB total)", flush=True)
+
+
+def add_bricklink_ids(db: sqlite3.Connection, path: Path, canon, pid_of: dict) -> None:
+    """Store BrickLink numbers from bricklink_ids.json, if it was fetched. A
+    part folded into its mold family takes the family root's number, or else
+    the number of one of its variants."""
+    if not path.exists():
+        return
+    data = json.loads(path.read_text())
+    for color_id, ids in data["colors"].items():
+        if ids and str(ids[0]).lstrip("-").isdigit():
+            db.execute("UPDATE colors SET bl_id = ? WHERE id = ?", (int(ids[0]), int(color_id)))
+    bl = {}
+    for part_num, ids in sorted(data["parts"].items(), key=lambda kv: canon(kv[0]) != kv[0]):
+        pid = pid_of.get(canon(part_num))
+        if pid and ids:
+            bl.setdefault(pid, str(ids[0]))
+    db.executemany("INSERT INTO bl_parts VALUES (?, ?)", sorted(bl.items()))
+    print(f"BrickLink numbers stored for {len(bl):,} parts", flush=True)
 
 
 def write_match(db_path: Path, out_dir: Path) -> None:
@@ -422,6 +509,7 @@ def main() -> None:
     args = ap.parse_args()
 
     download(args.raw, args.refresh)
+    download_bricklink_ids(args.raw, args.refresh)
     work = Path("build")
     work.mkdir(exist_ok=True)
     staging_path = work / "staging.sqlite3"
@@ -432,7 +520,7 @@ def main() -> None:
     staging.execute("PRAGMA synchronous = OFF")
     load_staging(staging, args.raw)
     final_path = work / "db.sqlite3"
-    build(staging, final_path)
+    build(staging, final_path, args.raw)
     staging.close()
     os.remove(staging_path)
     split(final_path, args.out)

@@ -192,6 +192,9 @@ dialog::backdrop { background: rgb(0 0 0 / 0.45); }
 .parts-table tr.ok td { opacity: 0.55; }
 .parts-table .missing { color: var(--accent); font-weight: 600; }
 .parts-table .pname { color: var(--muted); font-size: 12px; }
+.bl-panel { border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; margin-bottom: 12px; font-size: 14px; }
+.bl-panel p { margin: 0 0 8px; }
+.bl-panel .links { margin: 0 0 8px; }
 .section-label { margin: 18px 0 6px; font-size: 14px; }
 
 .foot { color: var(--muted); font-size: 12px; padding-top: 20px; padding-bottom: 32px; }
