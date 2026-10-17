@@ -216,4 +216,36 @@ dialog::backdrop { background: rgb(0 0 0 / 0.45); }
 .bl-panel .links { margin: 0 0 8px; }
 .section-label { margin: 18px 0 6px; font-size: 14px; }
 
+.pick-controls { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin: 8px 0 12px; font-size: 14px; }
+.pick-controls label { display: flex; gap: 6px; align-items: center; }
+.pick-controls input { width: auto; accent-color: var(--accent); }
+.pick-progress { color: var(--muted); }
+.pick-set { margin: 16px 0 4px; font-size: 16px; }
+.pick-color { display: flex; gap: 6px; align-items: center; margin: 12px 0 4px; font-size: 14px; }
+.pick-color .n { color: var(--muted); font-weight: 400; font-size: 12px; }
+.pick-list { list-style: none; margin: 0; padding: 0; }
+.pick-list li { border-bottom: 1px solid var(--line); }
+.pick-list label { display: flex; gap: 10px; align-items: center; padding: 5px 2px; cursor: pointer; font-size: 14px; }
+.pick-list input { width: 20px; height: 20px; flex: none; accent-color: var(--good); }
+.pick-list .qty { font-weight: 700; min-width: 2.6em; text-align: right; font-variant-numeric: tabular-nums; }
+.pick-list .what { flex: 1; min-width: 0; }
+.pick-list .what small { display: block; color: var(--muted); font-size: 12px; }
+.pick-list li.done label { opacity: 0.45; }
+.pick-list li.done .what b { text-decoration: line-through; }
+.hide-picked li.done { display: none; }
+#print-area { display: none; }
+@media print {
+  body > *:not(#print-area) { display: none !important; }
+  #print-area { display: block; color: #000; background: #fff; font: 11pt/1.3 system-ui, sans-serif; }
+  #print-area h1 { font-size: 16pt; margin: 0 0 4pt; }
+  #print-area h2 { font-size: 13pt; margin: 12pt 0 2pt; }
+  #print-area h3 { font-size: 11pt; margin: 8pt 0 2pt; break-after: avoid; }
+  #print-area table { width: 100%; border-collapse: collapse; }
+  #print-area td { border-bottom: 0.5pt solid #bbb; padding: 2pt 4pt; vertical-align: middle; }
+  #print-area tr { break-inside: avoid; }
+  #print-area img { width: 28pt; height: 28pt; object-fit: contain; }
+  #print-area .box { font-size: 14pt; width: 18pt; }
+  #print-area .qty { font-weight: 700; text-align: right; white-space: nowrap; }
+  #print-area .missing { color: #000; font-weight: 700; }
+}
 .foot { color: var(--muted); font-size: 12px; padding-top: 20px; padding-bottom: 32px; }

@@ -24,7 +24,7 @@
         <h2 id="pieces-h">My pieces <span class="count" id="piece-count">0</span></h2>
         <div class="actions">
           <button type="button" class="ghost" id="sample-btn" disabled title="Load the pieces of a creative brick box to try the app">Try a sample</button>
-          <label class="ghost button" title="Rebrickable CSV: Part,Color,Quantity">Import CSV<input type="file" id="import-file" accept=".csv,text/csv" hidden></label>
+          <label class="ghost button" title="Rebrickable CSV (Part,Color,Quantity) or BrickLink XML">Import<input type="file" id="import-file" accept=".csv,.xml,text/csv,text/xml,application/xml" hidden></label>
           <button type="button" class="ghost" id="export-btn" disabled>Export</button>
           <button type="button" class="ghost danger" id="clear-btn" disabled>Clear</button>
         </div>
@@ -196,6 +196,12 @@
       <button type="button" class="ghost" id="finder-more">Show more</button>
     </div>
   </dialog>
+
+  <dialog id="pick-dialog" aria-labelledby="pick-h">
+    <form method="dialog" class="dialog-close"><button aria-label="Close">×</button></form>
+    <div id="pick-body"></div>
+  </dialog>
+  <section id="print-area" aria-hidden="true"></section>
 
   <footer class="wrap foot">
     <p>Set and part data from <a href="https://rebrickable.com/downloads/">Rebrickable</a><span id="built-at"></span>.

@@ -9,11 +9,14 @@ const STORE_KEY = "wcib.collection.v1";
 const RESOLVED_KEY = "wcib.resolved.v1";
 const FILTERS_KEY = "wcib.filters.v1";
 const PLAN_KEY = "wcib.plan.v1";
+// Ticked-off pick list lines, per list.
+const PICKED_KEY = "wcib.picked.v1";
 const MAX_RESULTS = 60;
 
 const $ = (id) => document.getElementById(id);
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
 const fmt = (n) => n.toLocaleString("en-US");
+const plural = (n, one, many = `${one}s`) => `${fmt(n)} ${n === 1 ? one : many}`;
 
 let db;
 let api;
@@ -422,7 +425,7 @@ function pickSet(s) {
 // Every part of a set, with names and images, as in the set detail view.
 function setParts(sid) {
   return query(
-    `SELECT sp.pid, p.part_num, p.name, sp.color_id, sp.qty,
+    `SELECT sp.pid, p.part_num, p.name, p.cat_id, sp.color_id, sp.qty,
             coalesce(i.img, (SELECT img FROM part_imgs j WHERE j.pid = sp.pid LIMIT 1)) AS img
      FROM set_parts sp
      CROSS JOIN parts p ON p.pid = sp.pid
@@ -1187,6 +1190,7 @@ async function openSet(r) {
           <a href="https://www.bricklink.com/v2/catalog/catalogitem.page?S=${encodeURIComponent(r.set_num)}" target="_blank" rel="noopener">BrickLink</a>
           ${missing.length ? `<a href="#" id="dl-missing">Download missing (CSV)</a>
             <button type="button" class="ghost" id="bl-wanted">BrickLink wanted list</button>` : ""}
+          <button type="button" class="ghost" id="pick-set">Pick list</button>
           <button type="button" class="ghost" id="own-set">I own this set</button>
           <button type="button" class="ghost" id="plan-toggle">${planNums.includes(r.set_num) ? "Remove from build plan" : "Add to build plan"}</button>
         </div>
@@ -1207,6 +1211,7 @@ async function openSet(r) {
   };
   const bl = $("bl-wanted");
   if (bl) bl.onclick = () => showWantedList(missing, `For ${r.set_num} ${r.name}`, r.set_num, $("bl-panel"));
+  $("pick-set").onclick = () => openPickList(`${r.set_num} ${r.name}`, [{ set_num: r.set_num, title: "", lines: parts }]);
   $("plan-toggle").onclick = () => {
     $("set-dialog").close();
     togglePlan(r.set_num);
@@ -1364,7 +1369,7 @@ function computePlan(m, mode) {
     const before = [...pool.values()].map((p) => ({ ...p }));
     const lines = setLines(m, s.sid);
     const got = allocate(m, pool, lines, mode);
-    entries.push({ set: s, got, before, missing: lines.filter((l) => l.have < l.qty) });
+    entries.push({ set: s, got, before, lines, missing: lines.filter((l) => l.have < l.qty) });
   }
   lastPlan = { entries, left: [...pool.values()] };
   return lastPlan;
@@ -1396,8 +1401,9 @@ function renderPlan(plan) {
   const owned = [...collection.values()].reduce((n, p) => n + p.qty, 0);
   $("plan-total").innerHTML = `Uses <b>${fmt(used)}</b> of your ${fmt(owned)} pieces
     (${fmt(left.reduce((n, p) => n + p.qty, 0))} left over)${missing ? ` · <span class="missing">${fmt(missing)} pieces missing</span>` : " · nothing missing"}
-    ${missing ? `<div class="links"><a href="#" data-plan-export="csv">Download missing (CSV)</a>
-      <button type="button" class="ghost" data-plan-export="bricklink">BrickLink wanted list</button></div>` : ""}`;
+    <div class="links"><button type="button" class="ghost" data-plan-export="pick">Pick list</button>
+    ${missing ? `<a href="#" data-plan-export="csv">Download missing (CSV)</a>
+      <button type="button" class="ghost" data-plan-export="bricklink">BrickLink wanted list</button>` : ""}</div>`;
 }
 
 // The missing pieces of every set in the plan, with part numbers.
@@ -1417,6 +1423,7 @@ async function planMissing() {
 }
 
 async function exportPlan(kind) {
+  if (kind === "pick") return planPickList();
   const missing = await planMissing();
   const names = lastPlan.entries.map((e) => e.set.set_num);
   if (kind === "csv") return download("build-plan-missing.csv", toCsv(missing.map((p) => [p.part_num, p.color_id, p.qty])));
@@ -1451,6 +1458,181 @@ async function suggestPlan() {
   setStatus(added
     ? `Added ${fmt(added)} set${added > 1 ? "s" : ""} to the build plan.`
     : `No more sets reach ${Math.round(threshold * 100)}% with the pieces left. Try a lower level or looser filters.`);
+}
+
+// ---------- pick list ----------
+
+let categoryNames;
+function loadCategories() {
+  categoryNames ??= query("SELECT id, name FROM part_categories").then((rows) => new Map(rows.map((r) => [r.id, r.name])));
+  return categoryNames;
+}
+
+// Pick lists for every set in the build plan, in plan order, with the pieces
+// the plan gives each set.
+async function planPickList() {
+  const entries = lastPlan.entries;
+  if (!entries.length) return;
+  setStatus("Preparing the pick list…");
+  const pairs = [...new Map(entries.flatMap((e) => e.lines).map((l) => [keyOf(l.pid, l.color_id), [l.pid, l.color_id]])).values()];
+  const info = new Map((await query(
+    `WITH q(pid, color_id) AS (SELECT json_extract(value, '$[0]'), json_extract(value, '$[1]') FROM json_each(?))
+     SELECT q.pid, q.color_id, p.part_num, p.name, p.cat_id,
+            coalesce(i.img, (SELECT img FROM part_imgs j WHERE j.pid = q.pid LIMIT 1)) AS img
+     FROM q CROSS JOIN parts p ON p.pid = q.pid
+     LEFT JOIN part_imgs i ON i.pid = q.pid AND i.color_id = q.color_id`, [JSON.stringify(pairs)]))
+    .map((r) => [keyOf(r.pid, r.color_id), r]));
+  setStatus(`${fmt(totalSets)} sets`);
+  openPickList("Build plan", entries.map((e, i) => ({
+    set_num: e.set.set_num,
+    title: `${i + 1}. ${e.set.set_num} ${e.set.name}`,
+    lines: e.lines.map((l) => ({ ...info.get(keyOf(l.pid, l.color_id)), ...l })),
+  })));
+}
+
+// Lines grouped by color (most pieces first), then by category and name, so
+// pieces can be taken out of storage one color at a time.
+async function pickGroups(lines) {
+  const cats = await loadCategories();
+  const byColor = new Map();
+  for (const l of lines) {
+    if (!byColor.has(l.color_id)) byColor.set(l.color_id, []);
+    byColor.get(l.color_id).push({ ...l, cat: cats.get(l.cat_id) ?? "" });
+  }
+  return [...byColor].map(([color_id, ls]) => ({
+    color: colors.get(color_id) ?? { id: color_id, name: `Color ${color_id}` },
+    pieces: ls.reduce((n, l) => n + l.qty, 0),
+    lines: ls.sort((a, b) => a.cat.localeCompare(b.cat) || a.name.localeCompare(b.name, "en", { numeric: true })),
+  })).sort((a, b) => b.pieces - a.pieces || a.color.name.localeCompare(b.color.name));
+}
+
+function loadPicked() {
+  try { return JSON.parse(localStorage.getItem(PICKED_KEY) || "{}"); } catch { return {}; }
+}
+
+async function openPickList(title, sections) {
+  const listId = sections.map((sec) => sec.set_num).join(",");
+  const picked = new Set(loadPicked()[listId] || []);
+  const groups = await Promise.all(sections.map((sec) => pickGroups(sec.lines)));
+  const lineKey = (sec, l) => `${sec.set_num}:${l.pid}:${l.color_id}`;
+  const total = sections.reduce((n, sec) => n + sec.lines.length, 0);
+  const lack = (l) => (l.have != null && l.have < l.qty ? l.qty - l.have : 0);
+
+  const rowHtml = (sec, l) => `<li data-k="${esc(lineKey(sec, l))}"${picked.has(lineKey(sec, l)) ? ' class="done"' : ""}><label>
+      <input type="checkbox"${picked.has(lineKey(sec, l)) ? " checked" : ""}>
+      ${img(l.img, "thumb")}<span class="qty">${l.qty}×</span>
+      <span class="what"><b>${esc(l.part_num)}</b> ${esc(l.name)}<small>${esc(l.cat)}</small></span>
+      ${lack(l) ? `<span class="missing">missing ${lack(l)}</span>` : ""}</label></li>`;
+  $("pick-body").innerHTML = `
+    <h3 id="pick-h">Pick list: ${esc(title)}</h3>
+    <p class="finder-help">Tick pieces off as you take them out. Each color is together, largest groups first. Ticks are saved in this browser.</p>
+    <div class="pick-controls">
+      <span class="pick-progress" id="pick-progress"></span>
+      <label><input type="checkbox" id="pick-hide"> Hide ticked</label>
+      <button type="button" class="ghost" id="pick-print">Print</button>
+      <button type="button" class="ghost" id="pick-reset">Untick all</button>
+    </div>
+    <div id="pick-sections">${sections.map((sec, i) => `
+      ${sec.title ? `<h4 class="pick-set">${esc(sec.title)}</h4>` : ""}
+      ${groups[i].map((g) => `<h5 class="pick-color">${swatch(g.color)}${esc(g.color.name)} <span class="n">${fmt(g.pieces)} pieces</span></h5>
+        <ul class="pick-list">${g.lines.map((l) => rowHtml(sec, l)).join("")}</ul>`).join("")}`).join("")}
+    </div>`;
+
+  const progress = () => {
+    $("pick-progress").textContent = `${fmt(picked.size)} of ${fmt(total)} lines ticked`;
+    const all = loadPicked();
+    if (picked.size) all[listId] = [...picked];
+    else delete all[listId];
+    try { localStorage.setItem(PICKED_KEY, JSON.stringify(all)); } catch {}
+  };
+  progress();
+  $("pick-sections").onchange = (e) => {
+    const li = e.target.closest("li[data-k]");
+    if (!li) return;
+    if (e.target.checked) picked.add(li.dataset.k);
+    else picked.delete(li.dataset.k);
+    li.classList.toggle("done", e.target.checked);
+    progress();
+  };
+  $("pick-hide").onchange = (e) => $("pick-sections").classList.toggle("hide-picked", e.target.checked);
+  $("pick-reset").onclick = () => {
+    picked.clear();
+    for (const li of $("pick-sections").querySelectorAll("li.done")) {
+      li.classList.remove("done");
+      li.querySelector("input").checked = false;
+    }
+    progress();
+  };
+  $("pick-print").onclick = () => {
+    $("print-area").innerHTML = `<h1>Pick list: ${esc(title)}</h1>${sections.map((sec, i) => `
+      ${sec.title ? `<h2>${esc(sec.title)}</h2>` : ""}
+      ${groups[i].map((g) => `<h3>${esc(g.color.name)} (${fmt(g.pieces)} pieces)</h3><table>${g.lines.map((l) => `<tr>
+        <td class="box">${picked.has(lineKey(sec, l)) ? "☑" : "☐"}</td>
+        <td>${l.img ? `<img src="${IMG + esc(l.img)}" alt="">` : ""}</td>
+        <td class="qty">${l.qty}×</td>
+        <td><b>${esc(l.part_num)}</b> ${esc(l.name)}${lack(l) ? ` <span class="missing">(missing ${lack(l)})</span>` : ""}</td>
+        <td>${esc(l.cat)}</td></tr>`).join("")}</table>`).join("")}`).join("")}`;
+    window.print();
+  };
+  if (!$("pick-dialog").open) $("pick-dialog").showModal();
+}
+
+// ---------- BrickLink XML import ----------
+
+// Items of a BrickLink XML file (wanted list or store inventory): type, item
+// number, BrickLink color and quantity (QTY, or MINQTY in wanted lists).
+function parseBrickLinkXml(text) {
+  const doc = new DOMParser().parseFromString(text, "application/xml");
+  if (doc.querySelector("parsererror")) return null;
+  return [...doc.getElementsByTagName("ITEM")].map((it) => {
+    const get = (tag) => it.getElementsByTagName(tag)[0]?.textContent.trim() ?? "";
+    return { type: get("ITEMTYPE").toUpperCase(), id: get("ITEMID"), color: get("COLOR"),
+      qty: Math.max(1, Math.floor(Number(get("QTY") || get("MINQTY")) || 1)) };
+  });
+}
+
+// Parts are mapped back to Rebrickable numbers and colors (an unmapped number
+// is tried as a Rebrickable number); sets are added whole. Minifigs are left
+// out: their BrickLink and Rebrickable numbers don't match.
+async function importBrickLink(items) {
+  const parts = items.filter((it) => it.type === "P" && it.id);
+  const sets = items.filter((it) => it.type === "S" && it.id);
+  const other = items.length - parts.length - sets.length;
+  const toRb = new Map();
+  for (const r of await query(
+    `SELECT b.bl_id, p.part_num FROM bl_parts b CROSS JOIN parts p ON p.pid = b.pid
+     WHERE b.bl_id IN (SELECT value FROM json_each(?)) ORDER BY b.pid`,
+    [JSON.stringify([...new Set(parts.map((it) => it.id))])])) {
+    if (!toRb.has(r.bl_id)) toRb.set(r.bl_id, r.part_num);
+  }
+  const rbColor = new Map([...colors.values()].filter((c) => c.bl_id != null).map((c) => [String(c.bl_id), c.id]));
+  const rows = [];
+  let noColor = 0;
+  for (const it of parts) {
+    const color = rbColor.get(it.color);
+    if (color == null) noColor++;
+    else rows.push([toRb.get(it.id) ?? it.id, color, it.qty]);
+  }
+  const { added, skipped } = rows.length ? await addRows(rows) : { added: 0, skipped: 0 };
+  const m = await matchData;
+  m.setByNum ??= new Map(m.sets.map((s) => [s.set_num, s]));
+  let setsAdded = 0, setsUnknown = 0;
+  for (const it of sets) {
+    const s = m.setByNum.get(it.id) ?? m.setByNum.get(`${it.id}-1`);
+    if (!s) { setsUnknown++; continue; }
+    await addSet(s, it.qty);
+    setsAdded++;
+  }
+  renderPieces();
+  await refreshResults();
+  const notes = [
+    skipped && plural(skipped, "unknown part"),
+    noColor && plural(noColor, "part without a known color", "parts without a known color"),
+    setsUnknown && plural(setsUnknown, "unknown set"),
+    other && plural(other, "minifig or other item", "minifigs or other items"),
+  ].filter(Boolean);
+  setStatus(`Imported ${plural(added, "part lot")}${setsAdded ? ` and ${plural(setsAdded, "set")}` : ""} from BrickLink XML.`
+    + (notes.length ? ` Skipped ${notes.join(", ")}.` : ""));
 }
 
 // ---------- import / export ----------
@@ -1489,7 +1671,13 @@ async function importFile(e) {
   const file = db && e.target.files[0];
   e.target.value = "";
   if (!file) return;
-  const rows = parseCsv(await file.text());
+  const text = await file.text();
+  if (text.trimStart().startsWith("<")) {
+    const items = parseBrickLinkXml(text);
+    if (!items?.length) return setStatus("That XML file has no BrickLink items.", true);
+    return importBrickLink(items);
+  }
+  const rows = parseCsv(text);
   if (!rows.length) return setStatus("That file has no Part,Color,Quantity rows.", true);
   const { added, skipped } = await addRows(rows);
   renderPieces();
@@ -1628,6 +1816,9 @@ $("clear-btn").addEventListener("click", () => {
 $("sample-btn").addEventListener("click", () => {
   if (collection.size && !confirm("Replace your list with the pieces of a Medium Creative Brick Box (10696)?")) return;
   loadSample();
+});
+$("pick-dialog").addEventListener("click", (e) => {
+  if (e.target === e.currentTarget) e.currentTarget.close();
 });
 $("set-dialog").addEventListener("click", (e) => {
   if (e.target === e.currentTarget) e.currentTarget.close();
