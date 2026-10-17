@@ -10,6 +10,8 @@ Live at **https://megawan.github.io/what-can-i-build/**
 - `web/` is a static page. It queries the database in the browser with [sql.js-httpvfs](https://github.com/phiresky/sql.js-httpvfs), which fetches only the pages each query needs over HTTP Range requests, so no backend is required.
 - The same script writes `web/data/match.bin.gz` (about 2.6 MB): every set's parts packed by part and color, plus the set list and the sample collection. The page downloads it once at startup and matches in memory, which takes a few milliseconds instead of hundreds of range requests.
 - Matching: for every set, `coverage = Σ min(have, need) / Σ need` over its parts, matched by part and color (or by part only, with **Ignore colors**).
+- Results can be narrowed by top-level theme, year range, minimum set size and how many pieces may be missing.
+- Add pieces one part at a time, a whole set you own (by set number or name, or **I own this set** in a set's details), or a Rebrickable CSV.
 - Your piece list is kept in the browser's `localStorage`. Use **Export** to keep a copy; the CSV (`Part,Color,Quantity`, Rebrickable IDs) can be imported again here or on Rebrickable.
 
 ## Run locally

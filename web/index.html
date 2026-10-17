@@ -56,8 +56,23 @@
         </div>
       </form>
 
+      <form class="add" id="set-form" autocomplete="off">
+        <div class="row">
+          <div class="field search">
+            <label for="set-search">Add a set you own</label>
+            <input id="set-search" type="search" placeholder="Set number (10696) or name" disabled>
+            <ul class="suggestions" id="set-suggestions" role="listbox" hidden></ul>
+          </div>
+          <div class="field qty">
+            <label for="set-qty">Copies</label>
+            <input id="set-qty" type="number" min="1" value="1" disabled>
+          </div>
+          <button type="submit" id="set-add-btn" disabled>Add set</button>
+        </div>
+      </form>
+
       <ul class="pieces" id="pieces"></ul>
-      <p class="empty" id="pieces-empty">No pieces yet. Search for a part above, import a CSV, or try a sample.</p>
+      <p class="empty" id="pieces-empty">No pieces yet. Search for a part or a set you own above, import a CSV, or try a sample.</p>
     </section>
 
     <section class="panel" aria-labelledby="results-h">
@@ -72,6 +87,25 @@
             <option value="25" selected>25+ pieces</option>
             <option value="100">100+ pieces</option>
             <option value="300">300+ pieces</option>
+          </select>
+        </label>
+        <label>Theme
+          <select id="theme-filter"><option value="">All</option></select>
+        </label>
+        <label>Years
+          <input type="number" id="year-from" placeholder="from" min="1940" max="2100" aria-label="From year">
+          –
+          <input type="number" id="year-to" placeholder="to" min="1940" max="2100" aria-label="To year">
+        </label>
+        <label>Missing
+          <select id="max-missing">
+            <option value="">Any</option>
+            <option value="0">None</option>
+            <option value="5">5 or fewer</option>
+            <option value="10">10 or fewer</option>
+            <option value="25">25 or fewer</option>
+            <option value="50">50 or fewer</option>
+            <option value="100">100 or fewer</option>
           </select>
         </label>
       </div>
