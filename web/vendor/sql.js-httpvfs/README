@@ -1,0 +1,10 @@
+sql.js-httpvfs 0.8.12 (https://github.com/phiresky/sql.js-httpvfs), Apache-2.0.
+Copied from the npm package dist/ folder, with two patches to sqlite.worker.js:
+
+1. createLazyFile(...) now receives maxReadSpeed and serverChunkSize from
+   data/config.json. Upstream hard-codes the 5 MB read-ahead, which downloads far
+   more than the many short index scans this app makes.
+2. LazyUint8Array.getChunk clamps each read-ahead request to the server chunk
+   file that holds the requested page. Upstream maps a request to a single chunk
+   file, so a request that crossed a file boundary came back short and failed
+   with "doXHR failed (bug)!".

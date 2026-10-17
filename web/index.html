@@ -1,0 +1,93 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>What Can I Build?</title>
+  <meta name="description" content="Match the loose bricks you own against official sets and see what you can build.">
+  <link rel="stylesheet" href="style.css">
+  <script src="vendor/sql.js-httpvfs/index.js"></script>
+  <script type="module" src="app.js"></script>
+</head>
+<body>
+  <header class="top">
+    <div class="wrap">
+      <h1>What Can I Build?</h1>
+      <p class="lede">Add the pieces you own. See which official sets you can build, and which pieces are missing.</p>
+      <p class="status" id="status">Loading database…</p>
+    </div>
+  </header>
+
+  <main class="wrap grid">
+    <section class="panel" aria-labelledby="pieces-h">
+      <div class="panel-head">
+        <h2 id="pieces-h">My pieces <span class="count" id="piece-count">0</span></h2>
+        <div class="actions">
+          <button type="button" class="ghost" id="sample-btn" disabled title="Load the pieces of a creative brick box to try the app">Try a sample</button>
+          <label class="ghost button" title="Rebrickable CSV: Part,Color,Quantity">Import CSV<input type="file" id="import-file" accept=".csv,text/csv" hidden></label>
+          <button type="button" class="ghost" id="export-btn" disabled>Export</button>
+          <button type="button" class="ghost danger" id="clear-btn" disabled>Clear</button>
+        </div>
+      </div>
+
+      <form class="add" id="add-form" autocomplete="off">
+        <div class="field search">
+          <label for="part-search">Part</label>
+          <input id="part-search" type="search" placeholder="Name, part number (3001) or element ID" disabled>
+          <ul class="suggestions" id="suggestions" role="listbox" hidden></ul>
+        </div>
+        <div class="picked" id="picked" hidden>
+          <img id="picked-img" alt="">
+          <div>
+            <strong id="picked-num"></strong>
+            <span id="picked-name"></span>
+          </div>
+        </div>
+        <div class="row">
+          <div class="field">
+            <label for="color-select">Color</label>
+            <select id="color-select" disabled></select>
+          </div>
+          <div class="field qty">
+            <label for="qty-input">Qty</label>
+            <input id="qty-input" type="number" min="1" value="1" disabled>
+          </div>
+          <button type="submit" id="add-btn" disabled>Add</button>
+        </div>
+      </form>
+
+      <ul class="pieces" id="pieces"></ul>
+      <p class="empty" id="pieces-empty">No pieces yet. Search for a part above, import a CSV, or try a sample.</p>
+    </section>
+
+    <section class="panel" aria-labelledby="results-h">
+      <div class="panel-head">
+        <h2 id="results-h">Sets you can build</h2>
+      </div>
+      <div class="filters">
+        <label class="toggle"><input type="checkbox" id="any-color"> Ignore colors</label>
+        <label>Min. set size
+          <select id="min-size">
+            <option value="1">Any</option>
+            <option value="25" selected>25+ pieces</option>
+            <option value="100">100+ pieces</option>
+            <option value="300">300+ pieces</option>
+          </select>
+        </label>
+      </div>
+      <ol class="results" id="results"></ol>
+      <p class="empty" id="results-empty">Add some pieces to see matching sets.</p>
+    </section>
+  </main>
+
+  <dialog id="set-dialog">
+    <form method="dialog" class="dialog-close"><button aria-label="Close">×</button></form>
+    <div id="set-detail"></div>
+  </dialog>
+
+  <footer class="wrap foot">
+    <p>Set and part data from <a href="https://rebrickable.com/downloads/">Rebrickable</a><span id="built-at"></span>.
+      LEGO® is a trademark of the LEGO Group, which does not sponsor, authorize, or endorse this site.</p>
+  </footer>
+</body>
+</html>
