@@ -35,6 +35,7 @@
           <label for="part-search">Part</label>
           <input id="part-search" type="search" placeholder="Name, part number (3001) or element ID" disabled>
           <ul class="suggestions" id="suggestions" role="listbox" hidden></ul>
+          <button type="button" class="link-btn" id="finder-btn" disabled>Don't know the part number or name? Find it by look, description or photo</button>
         </div>
         <div class="picked" id="picked" hidden>
           <img id="picked-img" alt="">
@@ -56,16 +57,40 @@
         </div>
       </form>
 
+      <form class="add" id="set-form" autocomplete="off">
+        <div class="row">
+          <div class="field search">
+            <label for="set-search">Add a set you own</label>
+            <input id="set-search" type="search" placeholder="Set number (10696) or name" disabled>
+            <ul class="suggestions" id="set-suggestions" role="listbox" hidden></ul>
+          </div>
+          <div class="field qty">
+            <label for="set-qty">Copies</label>
+            <input id="set-qty" type="number" min="1" value="1" disabled>
+          </div>
+          <button type="submit" id="set-add-btn" disabled>Add set</button>
+        </div>
+      </form>
+
       <ul class="pieces" id="pieces"></ul>
-      <p class="empty" id="pieces-empty">No pieces yet. Search for a part above, import a CSV, or try a sample.</p>
+      <p class="empty" id="pieces-empty">No pieces yet. Search for a part or a set you own above, import a CSV, or try a sample.</p>
     </section>
 
     <section class="panel" aria-labelledby="results-h">
       <div class="panel-head">
         <h2 id="results-h">Sets you can build</h2>
       </div>
+      <div class="field browse">
+        <input id="set-filter" type="search" placeholder="Search all sets by name, number or theme" aria-label="Search all sets" disabled>
+      </div>
       <div class="filters">
-        <label class="toggle"><input type="checkbox" id="any-color"> Ignore colors</label>
+        <label>Match
+          <select id="match-mode">
+            <option value="exact">Exact colors</option>
+            <option value="color">Any color</option>
+            <option value="similar">Any color + similar parts</option>
+          </select>
+        </label>
         <label>Min. set size
           <select id="min-size">
             <option value="1">Any</option>
@@ -74,15 +99,86 @@
             <option value="300">300+ pieces</option>
           </select>
         </label>
+        <label>Theme
+          <select id="theme-filter"><option value="">All</option></select>
+        </label>
+        <label>Years
+          <input type="number" id="year-from" placeholder="from" min="1940" max="2100" aria-label="From year">
+          –
+          <input type="number" id="year-to" placeholder="to" min="1940" max="2100" aria-label="To year">
+        </label>
+        <label>Missing
+          <select id="max-missing">
+            <option value="">Any</option>
+            <option value="0">None</option>
+            <option value="5">5 or fewer</option>
+            <option value="10">10 or fewer</option>
+            <option value="25">25 or fewer</option>
+            <option value="50">50 or fewer</option>
+            <option value="100">100 or fewer</option>
+          </select>
+        </label>
       </div>
       <ol class="results" id="results"></ol>
       <p class="empty" id="results-empty">Add some pieces to see matching sets.</p>
+      <div class="more" id="results-more" hidden>
+        <span id="results-count"></span>
+        <button type="button" class="ghost" id="more-btn">Show more</button>
+      </div>
     </section>
   </main>
 
   <dialog id="set-dialog">
     <form method="dialog" class="dialog-close"><button aria-label="Close">×</button></form>
     <div id="set-detail"></div>
+  </dialog>
+
+  <dialog id="finder-dialog" aria-labelledby="finder-h">
+    <form method="dialog" class="dialog-close"><button aria-label="Close">×</button></form>
+    <h3 id="finder-h">Find a part</h3>
+    <div class="tabs" role="tablist">
+      <button type="button" role="tab" class="tab" data-mode="pick" aria-selected="true">Pick what it looks like</button>
+      <button type="button" role="tab" class="tab" data-mode="describe" aria-selected="false">Describe it</button>
+      <button type="button" role="tab" class="tab" data-mode="photo" aria-selected="false">Use a photo</button>
+    </div>
+
+    <div class="finder-pane" data-pane="pick">
+      <p class="finder-help">Choose what matches your piece, one step at a time. Each step narrows the pictures below; skip any step you're unsure of.</p>
+      <div class="chip-step"><span class="step-label">Shape</span><div class="chips" id="pick-shapes"></div></div>
+      <div class="chip-step"><span class="step-label">Size <small>(studs on top, e.g. 2 × 4)</small></span><div class="chips" id="pick-sizes"></div></div>
+      <div class="chip-step"><span class="step-label">Details</span><div class="chips" id="pick-details"></div></div>
+      <div class="chip-step"><span class="step-label">Color</span><div class="chips" id="pick-colors"></div></div>
+    </div>
+
+    <div class="finder-pane" data-pane="describe" hidden>
+      <p class="finder-help">Describe the piece in English or Indonesian: its shape, size, color and anything special about it.
+        For example <em>red flat 2x2 with hole</em>, <em>bata miring 2x1 biru</em> or <em>round plate with 4 studs</em>.
+        Count the size in studs, the bumps on top.</p>
+      <div class="finder-controls">
+        <input id="finder-text" type="search" placeholder="Describe the piece…" aria-label="Description">
+        <select id="finder-cat" aria-label="Category"><option value="">All categories</option></select>
+      </div>
+    </div>
+
+    <div class="finder-pane" data-pane="photo" hidden>
+      <p class="finder-help">Photograph one piece on a plain background, filling most of the picture.</p>
+      <div class="photo-actions">
+        <label class="button">Take a photo<input type="file" id="photo-camera" accept="image/*" capture="environment" hidden></label>
+        <label class="ghost button">Choose a photo<input type="file" id="photo-file" accept="image/*" hidden></label>
+        <img id="photo-preview" alt="" hidden>
+      </div>
+      <p class="photo-note">Photos are sent to <a href="https://brickognize.com/" target="_blank" rel="noopener">Brickognize</a>,
+        a free recognition service that is not part of this site. Under
+        <a href="https://brickognize.com/terms-of-service/" target="_blank" rel="noopener">its terms</a> it may keep uploaded
+        photos and use them to train its models, so don't include anything personal.</p>
+    </div>
+
+    <p class="finder-parsed" id="finder-parsed"></p>
+    <ul class="finder-grid" id="finder-grid"></ul>
+    <div class="more" id="finder-more-row" hidden>
+      <span id="finder-count"></span>
+      <button type="button" class="ghost" id="finder-more">Show more</button>
+    </div>
   </dialog>
 
   <footer class="wrap foot">
