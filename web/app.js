@@ -7,6 +7,7 @@ const IMG = "https://cdn.rebrickable.com/media/";
 const STORE_KEY = "wcib.collection.v1";
 // Resolved collection rows, valid only for the database build they came from.
 const RESOLVED_KEY = "wcib.resolved.v1";
+const FILTERS_KEY = "wcib.filters.v1";
 const MAX_RESULTS = 60;
 
 const $ = (id) => document.getElementById(id);
@@ -48,7 +49,7 @@ async function init() {
     builtAt = meta.built_at || "";
     // A cached match file from an older build would point at the wrong ids.
     matchData = matchData.then((m) => (m.builtAt === builtAt ? m : loadMatchData(matchUrl, "reload")));
-    matchData.catch(console.error);
+    matchData.then(fillThemes).catch(console.error);
     if (meta.built_at) $("built-at").textContent = `, updated ${meta.built_at.slice(0, 10)}`;
   } catch (err) {
     console.error(err);
@@ -56,7 +57,8 @@ async function init() {
     return;
   }
 
-  for (const id of ["part-search", "sample-btn", "export-btn", "clear-btn"]) $(id).disabled = false;
+  for (const id of ["part-search", "set-search", "set-qty", "set-add-btn", "sample-btn", "export-btn", "clear-btn"]) $(id).disabled = false;
+  restoreFilters();
   await restore();
   renderPieces();
   await refreshResults();
@@ -219,7 +221,38 @@ async function addRows(rows, { replace = false } = {}) {
 
 let picked = null;
 let searchSeq = 0;
-let activeIdx = -1;
+
+// Fills a suggestion list; onPick runs on click or Enter (see wireSuggestions).
+function fillSuggestions(ul, items, render, onPick) {
+  ul._active = -1;
+  ul._items = items;
+  ul._onPick = onPick;
+  ul.innerHTML = items.map((r, i) => `<li role="option" data-i="${i}">${render(r)}</li>`).join("");
+  ul.hidden = !items.length;
+}
+
+function wireSuggestions(input, ul) {
+  ul.addEventListener("mousedown", (e) => {
+    const li = e.target.closest("li");
+    if (li) { e.preventDefault(); ul._onPick(ul._items[Number(li.dataset.i)]); }
+  });
+  input.addEventListener("keydown", (e) => {
+    const items = ul._items || [];
+    if (ul.hidden || !items.length) return;
+    if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+      e.preventDefault();
+      ul._active = (ul._active + (e.key === "ArrowDown" ? 1 : -1) + items.length) % items.length;
+      [...ul.children].forEach((li, i) => li.setAttribute("aria-selected", String(i === ul._active)));
+      ul.children[ul._active].scrollIntoView({ block: "nearest" });
+    } else if (e.key === "Enter") {
+      e.preventDefault();
+      ul._onPick(items[Math.max(0, ul._active)]);
+    } else if (e.key === "Escape") {
+      ul.hidden = true;
+    }
+  });
+  input.addEventListener("blur", () => setTimeout(() => (ul.hidden = true), 150));
+}
 
 // "plate 2x4" -> name : ("plate" "2" "x" "4"*). Only the last token is a prefix,
 // so "2 x 4" doesn't also match "2 x 4x..." part numbers; a single token is
@@ -269,26 +302,12 @@ async function search(text) {
 }
 
 function showSuggestions(items) {
-  const ul = $("suggestions");
-  activeIdx = -1;
-  if (!items.length) {
-    ul.hidden = true;
-    ul.innerHTML = "";
-    return;
-  }
-  ul.innerHTML = items.map((r, i) => {
+  fillSuggestions($("suggestions"), items, (r) => {
     const color = r.color_id != null ? colors.get(r.color_id) : null;
     const extra = r.element ? `Element ${esc(r.element)} · ${swatch(color)}${esc(color?.name)}` : `in ${fmt(r.in_sets)} sets`;
-    return `<li role="option" data-i="${i}">
-      ${img(r.img, "thumb")}
-      <div><strong>${esc(r.part_num)}</strong> ${esc(r.name)}<div class="meta">${extra}</div></div></li>`;
-  }).join("");
-  ul.hidden = false;
-  ul.onmousedown = (e) => {
-    const li = e.target.closest("li");
-    if (li) { e.preventDefault(); pick(items[Number(li.dataset.i)]); }
-  };
-  ul._items = items;
+    return `${img(r.img, "thumb")}
+      <div><strong>${esc(r.part_num)}</strong> ${esc(r.name)}<div class="meta">${extra}</div></div>`;
+  }, pick);
 }
 
 async function pick(item) {
@@ -339,6 +358,83 @@ async function addPicked(e) {
   $("part-search").focus();
   renderPieces();
   scheduleResults();
+}
+
+// ---------- sets you own ----------
+
+let pickedSet = null;
+
+// "10696" finds 10696-1 first, then other set numbers starting with it; any
+// other text matches set names containing every word.
+async function searchSets(text) {
+  const q = text.trim().toLowerCase();
+  pickedSet = null;
+  if (!q) return fillSuggestions($("set-suggestions"), [], null, null);
+  const m = await matchData;
+  if ($("set-search").value.trim().toLowerCase() !== q) return;
+  const words = q.split(/\s+/);
+  const found = [];
+  for (const s of m.sets) {
+    const num = s.set_num.toLowerCase();
+    const rank = num === q || num === `${q}-1` ? 0 : num.startsWith(q) ? 1
+      : words.every((w) => s.name.toLowerCase().includes(w)) ? 2 : -1;
+    if (rank >= 0) found.push([rank, s]);
+  }
+  found.sort((a, b) => a[0] - b[0] || b[1].total - a[1].total);
+  fillSuggestions($("set-suggestions"), found.slice(0, 20).map(([, s]) => s), (s) => `
+    <img class="set-thumb" src="${esc(setImg(s.set_num))}" alt="" loading="lazy" onerror="this.style.visibility='hidden'">
+    <div><strong>${esc(s.set_num)}</strong> ${esc(s.name)}
+      <div class="meta">${s.year} · ${esc(themeName(s.theme_id))} · ${fmt(s.total)} pieces</div></div>`, pickSet);
+}
+
+function pickSet(s) {
+  pickedSet = s;
+  $("set-search").value = `${s.set_num} ${s.name}`;
+  $("set-suggestions").hidden = true;
+  $("set-qty").focus();
+  $("set-qty").select();
+}
+
+// Every part of a set, with names and images, as in the set detail view.
+function setParts(sid) {
+  return query(
+    `SELECT sp.pid, p.part_num, p.name, sp.color_id, sp.qty,
+            coalesce(i.img, (SELECT img FROM part_imgs j WHERE j.pid = sp.pid LIMIT 1)) AS img
+     FROM set_parts sp
+     CROSS JOIN parts p ON p.pid = sp.pid
+     LEFT JOIN part_imgs i ON i.pid = sp.pid AND i.color_id = sp.color_id
+     WHERE sp.sid = ?`, [sid]);
+}
+
+async function addSet(s, copies = 1) {
+  setStatus(`Adding the pieces of ${s.set_num} ${s.name}…`);
+  const parts = await setParts(s.sid);
+  for (const p of parts) {
+    const k = keyOf(p.pid, p.color_id);
+    const prev = collection.get(k);
+    if (prev) prev.qty += p.qty * copies;
+    else collection.set(k, { ...p, qty: p.qty * copies });
+  }
+  save();
+  renderPieces();
+  await refreshResults();
+}
+
+async function onSetSubmit(e) {
+  e.preventDefault();
+  if (!pickedSet) {
+    // Enter on a typed set number without picking from the list.
+    await searchSets($("set-search").value);
+    const first = $("set-suggestions")._items?.[0];
+    if (!first) return;
+    pickSet(first);
+  }
+  const s = pickedSet;
+  const copies = Math.max(1, Math.floor(Number($("set-qty").value) || 1));
+  pickedSet = null;
+  $("set-search").value = "";
+  $("set-qty").value = 1;
+  await addSet(s, copies);
 }
 
 // ---------- collection list ----------
@@ -405,6 +501,57 @@ function scheduleResults() {
 
 function anyColor() { return $("any-color").checked; }
 
+const FILTER_IDS = ["any-color", "min-size", "theme-filter", "year-from", "year-to", "max-missing"];
+
+function readFilters() {
+  const num = (id) => ($(id).value === "" ? null : Number($(id).value));
+  return {
+    minSize: Number($("min-size").value),
+    theme: num("theme-filter"),
+    yearFrom: num("year-from"),
+    yearTo: num("year-to"),
+    maxMissing: num("max-missing"),
+  };
+}
+
+function saveFilters() {
+  const values = Object.fromEntries(FILTER_IDS.map((id) => [id, $(id).type === "checkbox" ? $(id).checked : $(id).value]));
+  try { localStorage.setItem(FILTERS_KEY, JSON.stringify(values)); } catch {}
+}
+
+let savedFilters = {};
+
+function restoreFilters() {
+  try { savedFilters = JSON.parse(localStorage.getItem(FILTERS_KEY) || "{}"); } catch {}
+  for (const [id, v] of Object.entries(savedFilters)) {
+    if (!FILTER_IDS.includes(id)) continue;
+    if ($(id).type === "checkbox") $(id).checked = Boolean(v);
+    else $(id).value = v;
+  }
+}
+
+function rootTheme(id) {
+  let t = themes.get(id);
+  while (t?.parent_id != null && themes.has(t.parent_id)) t = themes.get(t.parent_id);
+  return t?.id ?? id;
+}
+
+// Top-level themes that have sets, for the theme filter.
+function fillThemes(m) {
+  const counts = new Map();
+  for (const s of m.sets) {
+    s.root_theme = rootTheme(s.theme_id);
+    counts.set(s.root_theme, (counts.get(s.root_theme) || 0) + 1);
+  }
+  const sel = $("theme-filter");
+  sel.innerHTML = `<option value="">All</option>` + [...counts]
+    .map(([id, n]) => [themes.get(id)?.name ?? `Theme ${id}`, id, n])
+    .sort((a, b) => a[0].localeCompare(b[0]))
+    .map(([name, id, n]) => `<option value="${id}">${esc(name)} (${fmt(n)})</option>`).join("");
+  sel.value = savedFilters["theme-filter"] ?? "";
+  if (sel.selectedIndex < 0) sel.value = "";
+}
+
 async function refreshResults() {
   const seq = ++resultsSeq;
   if (!collection.size) {
@@ -424,10 +571,15 @@ async function refreshResults() {
   }
   if (seq !== resultsSeq) return;
   const got = coverage(m, anyColor());
-  const minSize = Number($("min-size").value);
+  const f = readFilters();
   const rows = [];
   for (const s of m.sets) {
-    if (got[s.sid] > 0 && s.total >= minSize) rows.push({ ...s, got: got[s.sid], ratio: got[s.sid] / s.total });
+    const g = got[s.sid];
+    if (!g || s.total < f.minSize) continue;
+    if (f.theme != null && s.root_theme !== f.theme) continue;
+    if ((f.yearFrom != null && s.year < f.yearFrom) || (f.yearTo != null && s.year > f.yearTo)) continue;
+    if (f.maxMissing != null && s.total - g > f.maxMissing) continue;
+    rows.push({ ...s, got: g, ratio: g / s.total });
   }
   rows.sort((a, b) => b.ratio - a.ratio || b.total - a.total);
   lastResults = rows.slice(0, MAX_RESULTS);
@@ -449,7 +601,7 @@ function setImg(setNum) {
 function renderResults() {
   $("results-empty").hidden = lastResults.length > 0;
   $("results-empty").textContent = collection.size
-    ? "No sets match these pieces at this size. Try a smaller minimum set size."
+    ? "No sets match these pieces with these filters. Try loosening them."
     : "Add some pieces to see matching sets.";
   $("results").innerHTML = lastResults.map((r, i) => {
     const pct = Math.floor(r.ratio * 1000) / 10;
@@ -473,12 +625,7 @@ async function openSet(r) {
   body.innerHTML = `<p class="empty">Loading parts…</p>`;
   dialog.showModal();
 
-  const parts = await query(
-    `SELECT sp.pid, p.part_num, p.name, sp.color_id, sp.qty, i.img
-     FROM set_parts sp
-     CROSS JOIN parts p ON p.pid = sp.pid
-     LEFT JOIN part_imgs i ON i.pid = sp.pid AND i.color_id = sp.color_id
-     WHERE sp.sid = ?`, [r.sid]);
+  const parts = await setParts(r.sid);
 
   // How many of each line the collection covers. In any-color mode, exact
   // colors are used first, then the remaining pieces of that part in any color.
@@ -532,12 +679,17 @@ async function openSet(r) {
           <a href="https://rebrickable.com/sets/${encodeURIComponent(r.set_num)}/" target="_blank" rel="noopener">Rebrickable</a>
           <a href="https://www.bricklink.com/v2/catalog/catalogitem.page?S=${encodeURIComponent(r.set_num)}" target="_blank" rel="noopener">BrickLink</a>
           ${missing.length ? `<a href="#" id="dl-missing">Download missing (CSV)</a>` : ""}
+          <button type="button" class="ghost" id="own-set">I own this set</button>
         </div>
       </div>
     </div>
     ${missing.length ? `<h4 class="section-label">Missing pieces (${fmt(missing.length)} kinds)</h4>${table(missing)}` : `<p>You have every piece for this set.</p>`}
     ${owned.length ? `<details><summary class="section-label">Pieces you have (${fmt(owned.length)} kinds)</summary>${table(owned)}</details>` : ""}`;
 
+  $("own-set").onclick = () => {
+    $("set-dialog").close();
+    addSet(r);
+  };
   const dl = $("dl-missing");
   if (dl) dl.onclick = (e) => {
     e.preventDefault();
@@ -605,23 +757,14 @@ $("part-search").addEventListener("input", (e) => {
   clearTimeout(searchTimer);
   searchTimer = setTimeout(() => search(e.target.value), 200);
 });
-$("part-search").addEventListener("keydown", (e) => {
-  const ul = $("suggestions");
-  const items = ul._items || [];
-  if (ul.hidden || !items.length) return;
-  if (e.key === "ArrowDown" || e.key === "ArrowUp") {
-    e.preventDefault();
-    activeIdx = (activeIdx + (e.key === "ArrowDown" ? 1 : -1) + items.length) % items.length;
-    [...ul.children].forEach((li, i) => li.setAttribute("aria-selected", String(i === activeIdx)));
-    ul.children[activeIdx].scrollIntoView({ block: "nearest" });
-  } else if (e.key === "Enter") {
-    e.preventDefault();
-    pick(items[Math.max(0, activeIdx)]);
-  } else if (e.key === "Escape") {
-    ul.hidden = true;
-  }
+wireSuggestions($("part-search"), $("suggestions"));
+wireSuggestions($("set-search"), $("set-suggestions"));
+let setSearchTimer;
+$("set-search").addEventListener("input", (e) => {
+  clearTimeout(setSearchTimer);
+  setSearchTimer = setTimeout(() => searchSets(e.target.value), 150);
 });
-$("part-search").addEventListener("blur", () => setTimeout(() => ($("suggestions").hidden = true), 150));
+$("set-form").addEventListener("submit", onSetSubmit);
 $("add-form").addEventListener("submit", addPicked);
 $("pieces").addEventListener("change", onPiecesInput);
 $("pieces").addEventListener("click", onPiecesClick);
@@ -629,8 +772,12 @@ $("results").addEventListener("click", (e) => {
   const btn = e.target.closest(".result");
   if (btn) openSet(lastResults[Number(btn.dataset.i)]);
 });
-$("any-color").addEventListener("change", refreshResults);
-$("min-size").addEventListener("change", refreshResults);
+for (const id of FILTER_IDS) {
+  $(id).addEventListener("change", () => {
+    saveFilters();
+    refreshResults();
+  });
+}
 $("import-file").addEventListener("change", importFile);
 $("export-btn").addEventListener("click", () =>
   download("my-pieces.csv", toCsv([...collection.values()].map((p) => [p.part_num, p.color_id, p.qty]))));
