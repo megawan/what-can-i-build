@@ -17,7 +17,11 @@ Live at **https://megawan.github.io/what-can-i-build/**
 - **Import** a CSV in Rebrickable's `Part,Color,Quantity` format (for example a parts list exported from your Rebrickable collection; spare parts are skipped), or a **BrickLink XML** file such as a wanted list or store inventory. BrickLink part and color numbers are mapped to Rebrickable's, and sets in the file are added whole. Minifigs are skipped, because their BrickLink and Rebrickable numbers don't match. The status line says what was imported and what was skipped.
 - **Try a sample** loads a Medium Creative Brick Box (10696) to see how it works.
 
-Change a quantity in the list, remove a part with ×, or start over with **Clear**. Your list stays in this browser; use **Export** to keep a copy or move it to another device, and **Import** to load it back.
+Change a quantity in the list, remove a part with ×, or start over with **Clear**. Your list stays in this browser; use **Export** to keep a copy, and **Import** to load it back.
+
+- **Several collections**: keep separate lists, for example one per child or per storage box. Use the menu above the pieces to switch, **New**, **Rename** or **Delete**. Each collection has its own build plan. With two or more, **All collections combined** matches everything you own together; it is read-only, so switch back to one collection to change it.
+- **Share link** copies a link holding the open collection and its build plan. Opening the link offers to add them as a new collection, so it also moves your pieces to another device. The pieces travel in the part of the link after `#`, which browsers don't send to the server.
+- **Sort into bins** suggests how to store your pieces. It groups them by kind (bricks, plates, tiles, slopes, …). A kind too big for one bin is split by color: big colors get their own bins and the rest share mixed bins. Kinds too small for a bin of their own share one. Choose how many pieces a bin holds, and print labels for the bins.
 
 ### 2. See which sets you can build
 
@@ -31,6 +35,7 @@ Sets are ranked by the share of their pieces you have. The bar fills green at 10
   In the stricter modes, results show how many more pieces other colors or similar parts would cover, such as *+15 with other colors or similar parts*.
 - **Pieces** (the set size: fewest and most pieces, 25 or more by default; leave a box empty for no limit), **Theme**, **Years** and **Missing** (how many pieces may be missing) narrow the list. For example, Pieces 25 – 100 shows only sets of 25 to 100 pieces. Your choices are remembered.
 - **Search all sets** (the box above the results) finds any set by name, number or theme and shows how much of it you have, even 0%. Use **Show more** to see more results.
+- **New sets**: the set data is updated every week. When it has changed since your last visit, a note says how many sets were added and **Show only new sets** lists them, with how much of each you have. New sets carry a **New** badge until the next update.
 
 ### 3. Look at a set
 
@@ -67,7 +72,8 @@ The **Build plan** box above the results lets you build several sets from one co
 - Matching: for every set, `coverage = Σ min(have, need) / Σ need` over its parts. Parts are matched by part and color, by part in any color, or by family of similar parts in any color. Families come from Rebrickable's part relationships: alternates, and printed or patterned versions of a plain part.
 - The part finder reads `web/data/parts.json.gz` (about 0.8 MB), loaded the first time the finder opens. It holds the parts used in two or more sets, with their category and a picture, and is searched in memory. Photos are identified by Brickognize's public API, whose BrickLink part numbers are mapped back to Rebrickable's.
 - The build plan allocates pieces in plan order on the same in-memory data. Each set takes exact matches first, then, as the match mode allows, the same part in other colors and then similar parts. **Suggest sets** is greedy: each round it recomputes every set's coverage on the pieces still free and adds the qualifying set that uses the most of them.
-- The piece list, filters and build plan are kept in the browser's `localStorage`; nothing is sent anywhere except a photo you choose to identify.
+- Collections, filters, build plans and pick list ticks are kept in the browser's `localStorage`; nothing is sent anywhere except a photo you choose to identify. A share link holds a collection compressed (deflate, base64url) in the URL fragment.
+- New sets are found by comparing the set list with the one saved on the previous visit.
 
 ## Run locally
 

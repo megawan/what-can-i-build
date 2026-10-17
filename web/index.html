@@ -15,6 +15,7 @@
       <h1>What Can I Build?</h1>
       <p class="lede">Add the pieces you own. See which official sets you can build, and which pieces are missing.</p>
       <p class="status" id="status">Loading database…</p>
+      <div class="banner" id="share-banner" hidden></div>
     </div>
   </header>
 
@@ -29,6 +30,17 @@
           <button type="button" class="ghost danger" id="clear-btn" disabled>Clear</button>
         </div>
       </div>
+
+      <div class="collections">
+        <select id="collection-select" aria-label="Collection" disabled></select>
+        <button type="button" class="ghost" id="col-new" disabled>New</button>
+        <button type="button" class="ghost" id="col-rename" disabled>Rename</button>
+        <button type="button" class="ghost danger" id="col-delete" disabled hidden>Delete</button>
+        <span class="spacer"></span>
+        <button type="button" class="ghost" id="share-btn" disabled title="Copy a link with these pieces and their build plan">Share link</button>
+        <button type="button" class="ghost" id="sort-btn" disabled title="Suggest how to sort these pieces into storage bins">Sort into bins</button>
+      </div>
+      <p class="plan-help" id="combined-note" hidden>All your collections together, for matching. Switch to one collection to change its pieces.</p>
 
       <form class="add" id="add-form" autocomplete="off">
         <div class="field search">
@@ -134,6 +146,7 @@
           </select>
         </label>
       </div>
+      <p class="new-sets" id="new-sets" hidden></p>
       <p class="plan-note" id="plan-note" hidden></p>
       <ol class="results" id="results"></ol>
       <p class="empty" id="results-empty">Add some pieces to see matching sets.</p>
@@ -200,6 +213,10 @@
   <dialog id="pick-dialog" aria-labelledby="pick-h">
     <form method="dialog" class="dialog-close"><button aria-label="Close">×</button></form>
     <div id="pick-body"></div>
+  </dialog>
+  <dialog id="sort-dialog" aria-labelledby="sort-h">
+    <form method="dialog" class="dialog-close"><button aria-label="Close">×</button></form>
+    <div id="sort-body"></div>
   </dialog>
   <section id="print-area" aria-hidden="true"></section>
 

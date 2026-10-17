@@ -11,6 +11,13 @@ const FILTERS_KEY = "wcib.filters.v1";
 const PLAN_KEY = "wcib.plan.v1";
 // Ticked-off pick list lines, per list.
 const PICKED_KEY = "wcib.picked.v1";
+// The list of collections and which one is open. The first collection keeps
+// the storage keys above, so pieces saved before collections existed stay.
+const COLLECTIONS_KEY = "wcib.collections.v1";
+// Set numbers seen on the previous visit, and the sets new since then.
+const SEEN_KEY = "wcib.seen.v1";
+const NEW_KEY = "wcib.newsets.v1";
+const ALL = "all";
 const MAX_RESULTS = 60;
 
 const $ = (id) => document.getElementById(id);
@@ -61,12 +68,15 @@ async function init() {
     return;
   }
 
-  for (const id of ["part-search", "finder-btn", "set-search", "set-filter", "set-qty", "set-add-btn", "sample-btn", "export-btn", "clear-btn", "plan-suggest"]) $(id).disabled = false;
+  for (const id of ["set-filter", "export-btn", "plan-suggest", "collection-select", "col-new", "col-rename", "col-delete", "share-btn", "sort-btn"]) $(id).disabled = false;
   restoreFilters();
-  try { planNums = JSON.parse(localStorage.getItem(PLAN_KEY) || "[]"); } catch {}
+  loadCollections();
   await restore();
+  renderCollections();
   renderPieces();
+  matchData.then(trackNewSets).catch(() => {});
   await refreshResults();
+  offerSharedLink();
 }
 
 async function setStatus(text, isError = false) {
@@ -186,35 +196,110 @@ function coverage(m, mode, items = [...collection.values()]) {
   return got;
 }
 
-// ---------- collection persistence ----------
+// ---------- collections ----------
+
+let collections = { active: "main", list: [{ id: "main", name: "My pieces" }] };
+
+const combined = () => collections.active === ALL;
+const keysFor = (id) => (id === "main"
+  ? { rows: STORE_KEY, resolved: RESOLVED_KEY, plan: PLAN_KEY }
+  : { rows: `wcib.collection.${id}.v1`, resolved: `wcib.resolved.${id}.v1`, plan: `wcib.plan.${id}.v1` });
+const readJson = (key, fallback) => {
+  try { return JSON.parse(localStorage.getItem(key) || "null") ?? fallback; } catch { return fallback; }
+};
+const writeJson = (key, value) => {
+  try { localStorage.setItem(key, JSON.stringify(value)); } catch {}
+};
+
+function loadCollections() {
+  const saved = readJson(COLLECTIONS_KEY, null);
+  if (saved?.list?.length) collections = saved;
+  if (collections.active !== ALL && !collections.list.some((c) => c.id === collections.active)) collections.active = collections.list[0].id;
+}
+
+function renderCollections() {
+  const sel = $("collection-select");
+  sel.innerHTML = collections.list.map((c) => `<option value="${esc(c.id)}">${esc(c.name)}</option>`).join("")
+    + (collections.list.length > 1 ? `<option value="${ALL}">All collections combined</option>` : "");
+  sel.value = collections.active;
+  const all = combined();
+  $("col-rename").hidden = all;
+  $("col-delete").hidden = all || collections.list.length < 2;
+  $("combined-note").hidden = !all;
+  // The combined view is for matching only.
+  for (const id of ["part-search", "finder-btn", "set-search", "set-qty", "set-add-btn", "sample-btn", "clear-btn", "import-file"]) $(id).disabled = all;
+}
 
 function save() {
+  if (combined()) return;
+  const keys = keysFor(collections.active);
   const items = [...collection.values()];
-  try {
-    localStorage.setItem(STORE_KEY, JSON.stringify(items.map((p) => [p.part_num, p.color_id, p.qty])));
-    localStorage.setItem(RESOLVED_KEY, JSON.stringify({ built_at: builtAt, items }));
-  } catch {}
+  writeJson(keys.rows, items.map((p) => [p.part_num, p.color_id, p.qty]));
+  writeJson(keys.resolved, { built_at: builtAt, items });
+}
+
+// A collection's pieces. Resolved rows are reused for the same database
+// build; otherwise the part numbers are looked up again.
+async function loadItems(id) {
+  const keys = keysFor(id);
+  const rows = readJson(keys.rows, []);
+  const resolved = readJson(keys.resolved, null);
+  if (resolved?.built_at === builtAt && resolved.items?.length === rows.length) return resolved.items;
+  const items = rows.length ? await resolveRows(rows) : [];
+  writeJson(keys.resolved, { built_at: builtAt, items });
+  return items;
 }
 
 async function restore() {
-  let rows = [];
-  let resolved;
-  try {
-    rows = JSON.parse(localStorage.getItem(STORE_KEY) || "[]");
-    resolved = JSON.parse(localStorage.getItem(RESOLVED_KEY) || "null");
-  } catch {}
-  // Same build: reuse the resolved rows instead of looking every part up again.
-  if (resolved?.built_at === builtAt && resolved.items?.length === rows.length) {
-    for (const p of resolved.items) collection.set(keyOf(p.pid, p.color_id), p);
-  } else if (rows.length) {
-    await addRows(rows, { replace: true });
+  collection.clear();
+  const ids = combined() ? collections.list.map((c) => c.id) : [collections.active];
+  for (const id of ids) {
+    for (const p of await loadItems(id)) {
+      const k = keyOf(p.pid, p.color_id);
+      const prev = collection.get(k);
+      if (prev) prev.qty += p.qty;
+      else collection.set(k, { ...p });
+    }
   }
+  planNums = readJson(combined() ? "wcib.plan.all.v1" : keysFor(collections.active).plan, []);
+}
+
+async function switchCollection(id) {
+  collections.active = id;
+  writeJson(COLLECTIONS_KEY, collections);
+  await restore();
+  renderCollections();
+  renderPieces();
+  resultsLimit = MAX_RESULTS;
+  await refreshResults();
+}
+
+function uniqueName(name) {
+  let n = name, i = 2;
+  while (collections.list.some((c) => c.name === n)) n = `${name} (${i++})`;
+  return n;
+}
+
+// Adds a collection, optionally with pieces ([[part_num, color_id, qty], ...])
+// and a build plan, and opens it.
+async function newCollection(name, rows = [], plan = []) {
+  const id = Date.now().toString(36);
+  collections.list.push({ id, name: uniqueName(name) });
+  writeJson(keysFor(id).rows, rows);
+  writeJson(keysFor(id).plan, plan);
+  await switchCollection(id);
+}
+
+function editable() {
+  if (!combined()) return true;
+  setStatus("Switch to one collection to change its pieces.", true);
+  return false;
 }
 
 // Resolve [[part_num, color_id, qty], ...] (any part number, including mold
-// variants) to canonical parts and merge them into the collection.
-async function addRows(rows, { replace = false } = {}) {
-  const resolved = await query(
+// variants) to canonical parts; unknown part numbers are dropped.
+function resolveRows(rows) {
+  return query(
     `WITH h(part_num, color_id, qty) AS (
        SELECT json_extract(value, '$[0]'), json_extract(value, '$[1]'), json_extract(value, '$[2]') FROM json_each(?))
      SELECT p.pid, p.part_num, p.name, h.color_id, h.qty,
@@ -226,6 +311,11 @@ async function addRows(rows, { replace = false } = {}) {
      CROSS JOIN parts p ON p.pid = coalesce(a.pid, x.pid)`,
     [JSON.stringify(rows.map(([p, c, q]) => [String(p), Number(c), Number(q)]))],
   );
+}
+
+// Resolve rows and merge them into the open collection.
+async function addRows(rows, { replace = false } = {}) {
+  const resolved = await resolveRows(rows);
   if (replace) collection.clear();
   for (const r of resolved) {
     if (!(r.qty > 0)) continue;
@@ -434,6 +524,7 @@ function setParts(sid) {
 }
 
 async function addSet(s, copies = 1) {
+  if (!editable()) return;
   setStatus(`Adding the pieces of ${s.set_num} ${s.name}…`);
   const parts = await setParts(s.sid);
   for (const p of parts) {
@@ -916,8 +1007,8 @@ function renderPieces() {
       ${img(p.img, "thumb")}
       <div class="info"><strong>${esc(p.part_num)}</strong> ${swatch(c)}${esc(c?.name)}
         <span class="name">${esc(p.name)}</span></div>
-      <input type="number" min="0" value="${p.qty}" aria-label="Quantity">
-      <button type="button" class="icon-btn" aria-label="Remove">×</button></li>`;
+      <input type="number" min="0" value="${p.qty}" aria-label="Quantity"${combined() ? " disabled" : ""}>
+      ${combined() ? "" : `<button type="button" class="icon-btn" aria-label="Remove">×</button>`}</li>`;
   }).join("");
 }
 
@@ -1013,9 +1104,10 @@ function fillThemes(m) {
 async function refreshResults() {
   const seq = ++resultsSeq;
   const text = $("set-filter").value.trim().toLowerCase();
-  if (!collection.size && !text) {
+  if (!collection.size && !text && !$("new-only")?.checked) {
     lastResults = allResults = [];
     renderResults();
+    renderNewSets(null);
     setStatus(`${fmt(totalSets)} sets`);
     return;
   }
@@ -1041,18 +1133,21 @@ async function refreshResults() {
   // What other colors and similar parts would add, shown as a hint.
   const flex = mode === "similar" ? got : coverage(m, "similar", pool);
   const f = readFilters();
+  const newOnly = $("new-only")?.checked && newSets.size > 0;
   const rows = [];
   for (const s of m.sets) {
     const g = got[s.sid];
-    // With search text, sets you have nothing for are listed too.
+    // With search text, or when listing new sets, sets you have nothing for are listed too.
     const rank = text ? setTextRank(s, text) : 0;
-    if (rank < 0 || (!g && !text) || planned.has(s.sid) || !passesFilters(s, g, f)) continue;
+    if (newOnly && !newSets.has(s.set_num)) continue;
+    if (rank < 0 || (!g && !text && !newOnly) || planned.has(s.sid) || !passesFilters(s, g, f)) continue;
     rows.push({ ...s, got: g, ratio: g / s.total, more: flex[s.sid] - g, rank, pool,
       poolNote: pool ? "Counting only the pieces your build plan leaves free." : "" });
   }
   rows.sort((a, b) => b.ratio - a.ratio || a.rank - b.rank || b.total - a.total);
   allResults = rows;
   lastResults = rows.slice(0, resultsLimit);
+  renderNewSets(newOnly ? rows.length : null);
   renderResults();
   setStatus(`${fmt(totalSets)} sets checked in ${((performance.now() - t0) / 1000).toFixed(2)} s`);
 }
@@ -1091,7 +1186,7 @@ function renderResults() {
     return `<li><button type="button" class="result" data-i="${i}">
       <img src="${esc(setImg(r.set_num))}" alt="" loading="lazy" onerror="this.style.visibility='hidden'">
       <div class="body">
-        <div class="title">${esc(r.name)}</div>
+        <div class="title">${esc(r.name)}${newSets.has(r.set_num) ? `<span class="badge">New</span>` : ""}</div>
         <div class="sub">${esc(r.set_num)} · ${r.year} · ${esc(themeName(r.theme_id))}</div>
         <div class="sub">${fmt(r.got)} of ${fmt(r.total)} pieces${r.more > 0 ? ` <span class="hint">· +${fmt(r.more)} with ${moreWith}</span>` : ""}</div>
         <div class="bar"><span class="${pct >= 100 ? "full" : ""}" style="width:${Math.min(100, pct)}%"></span></div>
@@ -1289,7 +1384,7 @@ let planNums = [];
 let lastPlan = { entries: [], left: [] };
 
 function savePlan() {
-  try { localStorage.setItem(PLAN_KEY, JSON.stringify(planNums)); } catch {}
+  writeJson(combined() ? "wcib.plan.all.v1" : keysFor(collections.active).plan, planNums);
 }
 
 function togglePlan(setNum) {
@@ -1635,6 +1730,216 @@ async function importBrickLink(items) {
     + (notes.length ? ` Skipped ${notes.join(", ")}.` : ""));
 }
 
+// ---------- share by link ----------
+
+// Collections travel in the URL fragment (never sent to the server):
+// "#c=" + base64url(deflate(JSON {n: name, r: "part,color,qty;...", p: "set,set"})).
+async function deflate(text, decompress = false) {
+  const stream = new Blob([text]).stream().pipeThrough(decompress ? new DecompressionStream("deflate-raw") : new CompressionStream("deflate-raw"));
+  return decompress ? new Response(stream).text() : new Uint8Array(await new Response(stream).arrayBuffer());
+}
+function toBase64Url(bytes) {
+  let bin = "";
+  for (let i = 0; i < bytes.length; i += 8192) bin += String.fromCharCode(...bytes.subarray(i, i + 8192));
+  return btoa(bin).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+const fromBase64Url = (text) => Uint8Array.from(atob(text.replace(/-/g, "+").replace(/_/g, "/")), (c) => c.charCodeAt(0));
+
+async function shareLink() {
+  if (!collection.size) return setStatus("Add some pieces first; there is nothing to share yet.", true);
+  const name = combined() ? "All collections" : collections.list.find((c) => c.id === collections.active)?.name ?? "Shared pieces";
+  const payload = JSON.stringify({
+    n: name,
+    r: [...collection.values()].map((p) => `${p.part_num},${p.color_id},${p.qty}`).join(";"),
+    p: planNums.join(","),
+  });
+  const url = `${location.origin}${location.pathname}#c=${toBase64Url(await deflate(payload))}`;
+  try {
+    await navigator.clipboard.writeText(url);
+    setStatus(`Link copied: ${plural(collection.size, "lot")}${planNums.length ? ` and a build plan of ${plural(planNums.length, "set")}` : ""}. Anyone who opens it can add them as a new collection.`);
+  } catch {
+    prompt("Copy this link:", url);
+  }
+}
+
+// A shared link adds nothing by itself: it offers to add the pieces as a new
+// collection, then clears the fragment.
+async function offerSharedLink() {
+  const m = location.hash.match(/^#c=([\w-]+)$/);
+  if (!m) return;
+  history.replaceState(null, "", location.pathname + location.search);
+  let data;
+  try {
+    data = JSON.parse(await deflate(fromBase64Url(m[1]), true));
+  } catch {
+    return setStatus("That share link is damaged or incomplete.", true);
+  }
+  const rows = (data.r || "").split(";").filter(Boolean).map((r) => r.split(",")).map(([p, c, q]) => [p, Number(c), Number(q)]);
+  const plan = (data.p || "").split(",").filter(Boolean);
+  const pieces = rows.reduce((n, r) => n + r[2], 0);
+  const banner = $("share-banner");
+  banner.innerHTML = `<p>A shared collection, <b>${esc(data.n || "Shared pieces")}</b>: ${plural(pieces, "piece")} in ${plural(rows.length, "lot")}${plan.length ? `, with a build plan of ${plural(plan.length, "set")}` : ""}.</p>
+    <button type="button" id="share-accept">Add as a new collection</button>
+    <button type="button" class="ghost" id="share-dismiss">Dismiss</button>`;
+  banner.hidden = false;
+  $("share-dismiss").onclick = () => (banner.hidden = true);
+  $("share-accept").onclick = async () => {
+    banner.hidden = true;
+    await newCollection(data.n || "Shared pieces", rows, plan);
+    setStatus(`Added “${collections.list.at(-1).name}” with ${plural(collection.size, "lot")}.`);
+  };
+}
+
+// ---------- sorting into bins ----------
+
+// Spreads items ({pieces, ...}) over n bins as evenly as possible, largest
+// first into the emptiest bin.
+function spread(items, n) {
+  const bins = Array.from({ length: n }, () => ({ pieces: 0, items: [] }));
+  for (const it of [...items].sort((a, b) => b.pieces - a.pieces)) {
+    const bin = bins.reduce((a, b) => (b.pieces < a.pieces ? b : a));
+    bin.pieces += it.pieces;
+    bin.items.push(it);
+  }
+  return bins.filter((b) => b.items.length);
+}
+
+// Storage bins: one per kind of piece (the finder's shape groups). A kind
+// with more pieces than a bin holds is split by color: big colors get their
+// own bins, the other colors share evenly filled mixed bins. Kinds too small
+// for a bin of their own (under a quarter of one) share bins with each other.
+function planBins(groups, capacity) {
+  const bins = [];
+  const small = [];
+  for (const g of groups) {
+    if (g.pieces < capacity / 4) {
+      small.push(g);
+    } else if (g.pieces <= capacity) {
+      bins.push({ name: g.label, pieces: g.pieces, kinds: g.kinds, colors: g.colors.map((c) => c.id) });
+    } else {
+      const rest = [];
+      for (const c of g.colors) {
+        if (c.pieces < capacity / 3) {
+          rest.push(c);
+          continue;
+        }
+        const n = Math.ceil(c.pieces / capacity);
+        for (let i = 0; i < n; i++) {
+          bins.push({ name: `${g.label}: ${colors.get(c.id)?.name ?? c.id}${n > 1 ? ` (${i + 1} of ${n})` : ""}`,
+            pieces: Math.round(c.pieces / n), kinds: c.kinds, colors: [c.id] });
+        }
+      }
+      const mixed = spread(rest, Math.ceil(rest.reduce((n, c) => n + c.pieces, 0) / capacity));
+      mixed.forEach((b, i) => bins.push({
+        name: `${g.label}: mixed colors${mixed.length > 1 ? ` ${i + 1}` : ""}`,
+        pieces: b.pieces, kinds: b.items.reduce((n, c) => n + c.kinds, 0), colors: b.items.map((c) => c.id),
+      }));
+    }
+  }
+  for (const b of spread(small, Math.ceil(small.reduce((n, g) => n + g.pieces, 0) / capacity))) {
+    bins.push({ name: b.items.map((g) => g.label).join(", "), pieces: b.pieces,
+      kinds: b.items.reduce((n, g) => n + g.kinds, 0), colors: [...new Set(b.items.flatMap((g) => g.colors.map((c) => c.id)))] });
+  }
+  return bins;
+}
+
+async function sortGroups() {
+  const items = [...collection.values()];
+  const { byNum } = await loadCatalog();
+  const catOf = new Map(items.map((p) => [p.pid, byNum.get(p.part_num)?.cat_id]));
+  const unknown = items.filter((p) => catOf.get(p.pid) == null).map((p) => p.pid);
+  if (unknown.length) {
+    for (const r of await query("SELECT p.pid, p.cat_id FROM json_each(?) j CROSS JOIN parts p ON p.pid = j.value", [JSON.stringify(unknown)])) {
+      catOf.set(r.pid, r.cat_id);
+    }
+  }
+  const shapeOf = new Map();
+  for (const [, label, cats] of SHAPES) for (const c of cats) shapeOf.set(c, label);
+  const groups = new Map();
+  for (const p of items) {
+    const label = shapeOf.get(catOf.get(p.pid)) ?? "Other pieces";
+    const g = groups.get(label) || { label, pieces: 0, kinds: 0, byColor: new Map() };
+    g.pieces += p.qty;
+    g.kinds++;
+    const c = g.byColor.get(p.color_id) || { id: p.color_id, pieces: 0, kinds: 0 };
+    c.pieces += p.qty;
+    c.kinds++;
+    g.byColor.set(p.color_id, c);
+    groups.set(label, g);
+  }
+  return [...groups.values()].map((g) => ({ ...g, colors: [...g.byColor.values()].sort((a, b) => b.pieces - a.pieces) }))
+    .sort((a, b) => b.pieces - a.pieces);
+}
+
+async function openSorter() {
+  if (!collection.size) return setStatus("Add some pieces first; there is nothing to sort yet.", true);
+  $("sort-body").innerHTML = `<p class="empty">Sorting your pieces…</p>`;
+  $("sort-dialog").showModal();
+  const groups = await sortGroups();
+  const total = groups.reduce((n, g) => n + g.pieces, 0);
+  const render = () => {
+    const capacity = Number($("bin-size")?.value || 250);
+    const bins = planBins(groups, capacity);
+    $("sort-bins").innerHTML = bins.map((b) => `<li><b>${esc(b.name)}</b>
+      <span class="meta">${plural(b.pieces, "piece")} · ${plural(b.kinds, "kind")}</span>
+      <div class="swatches">${b.colors.slice(0, 16).map((id) => swatch(colors.get(id))).join("")}${b.colors.length > 16 ? "…" : ""}</div></li>`).join("");
+    $("sort-count").textContent = `${plural(bins.length, "bin")} of up to ${fmt(capacity)} pieces`;
+    $("sort-print").onclick = () => {
+      $("print-area").innerHTML = `<h1>Storage bins</h1><div class="labels">${bins.map((b) => `<div class="label"><b>${esc(b.name)}</b>
+        ${b.colors.length <= 6 ? esc(b.colors.map((id) => colors.get(id)?.name ?? id).join(", ")) : `${b.colors.length} colors`}</div>`).join("")}</div>`;
+      window.print();
+    };
+  };
+  $("sort-body").innerHTML = `
+    <h3 id="sort-h">Sort into bins</h3>
+    <p class="finder-help">${plural(total, "piece")} in ${plural(collection.size, "lot")}. Sorting by kind first, then by color only where a kind is too big for one bin, keeps pieces easy to find without needing hundreds of boxes.</p>
+    <div class="sort-summary">${groups.map((g) => `<div class="row"><span>${esc(g.label)}</span>
+      <div class="bar"><span style="width:${(g.pieces / groups[0].pieces) * 100}%"></span></div><span>${fmt(g.pieces)}</span></div>`).join("")}</div>
+    <div class="pick-controls">
+      <label>Pieces per bin <select id="bin-size">
+        <option value="100">100</option><option value="250" selected>250</option><option value="500">500</option><option value="1000">1,000</option>
+      </select></label>
+      <span class="pick-progress" id="sort-count"></span>
+      <button type="button" class="ghost" id="sort-print">Print bin labels</button>
+    </div>
+    <ul class="bins" id="sort-bins"></ul>`;
+  $("bin-size").onchange = render;
+  render();
+}
+
+// ---------- new sets ----------
+
+let newSets = new Set();
+let newSince = "";
+
+// Compares the set list with the one seen on the previous visit. Sets added
+// by a newer database build stay marked as new until the next build.
+function trackNewSets(m) {
+  const nums = m.sets.map((s) => s.set_num);
+  const seen = readJson(SEEN_KEY, null);
+  if (seen && seen.built_at !== m.builtAt) {
+    const old = new Set(seen.sets.split(","));
+    writeJson(NEW_KEY, { built_at: m.builtAt, since: seen.built_at, sets: nums.filter((n) => !old.has(n)) });
+  }
+  if (!seen || seen.built_at !== m.builtAt) writeJson(SEEN_KEY, { built_at: m.builtAt, sets: nums.join(",") });
+  const fresh = readJson(NEW_KEY, null);
+  newSets = new Set(fresh?.built_at === m.builtAt ? fresh.sets : []);
+  newSince = fresh?.since ?? "";
+}
+
+function renderNewSets(rows) {
+  const el = $("new-sets");
+  el.hidden = !newSets.size;
+  if (!newSets.size) return;
+  const only = $("new-only")?.checked ?? false;
+  el.innerHTML = `<span><span class="badge">New</span> ${plural(newSets.size, "set")} added since your last visit (data of ${esc(newSince.slice(0, 10))})${rows != null ? `; ${plural(rows, "match", "match")} your filters` : ""}.</span>
+    <label><input type="checkbox" id="new-only"${only ? " checked" : ""}> Show only new sets</label>`;
+  $("new-only").onchange = () => {
+    resultsLimit = MAX_RESULTS;
+    refreshResults();
+  };
+}
+
 // ---------- import / export ----------
 
 function toCsv(rows) {
@@ -1668,7 +1973,7 @@ function parseCsv(text) {
 }
 
 async function importFile(e) {
-  const file = db && e.target.files[0];
+  const file = db && editable() && e.target.files[0];
   e.target.value = "";
   if (!file) return;
   const text = await file.text();
@@ -1806,6 +2111,30 @@ $("more-btn").addEventListener("click", () => {
 $("import-file").addEventListener("change", importFile);
 $("export-btn").addEventListener("click", () =>
   download("my-pieces.csv", toCsv([...collection.values()].map((p) => [p.part_num, p.color_id, p.qty]))));
+$("collection-select").addEventListener("change", (e) => switchCollection(e.target.value));
+$("col-new").addEventListener("click", () => {
+  const name = prompt("Name for the new collection:", uniqueName("Collection"));
+  if (name?.trim()) newCollection(name.trim());
+});
+$("col-rename").addEventListener("click", () => {
+  const c = collections.list.find((x) => x.id === collections.active);
+  const name = c && prompt("New name for this collection:", c.name);
+  if (!name?.trim()) return;
+  c.name = name.trim();
+  writeJson(COLLECTIONS_KEY, collections);
+  renderCollections();
+});
+$("col-delete").addEventListener("click", () => {
+  const c = collections.list.find((x) => x.id === collections.active);
+  if (!c || collections.list.length < 2 || !confirm(`Delete the collection “${c.name}” and its pieces and build plan?`)) return;
+  collections.list = collections.list.filter((x) => x !== c);
+  for (const key of Object.values(keysFor(c.id))) {
+    try { localStorage.removeItem(key); } catch {}
+  }
+  switchCollection(collections.list[0].id);
+});
+$("share-btn").addEventListener("click", shareLink);
+$("sort-btn").addEventListener("click", openSorter);
 $("clear-btn").addEventListener("click", () => {
   if (!collection.size || !confirm("Remove all pieces from your list?")) return;
   collection.clear();
