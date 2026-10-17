@@ -57,7 +57,7 @@ async function init() {
     return;
   }
 
-  for (const id of ["part-search", "set-search", "set-filter", "set-qty", "set-add-btn", "sample-btn", "export-btn", "clear-btn"]) $(id).disabled = false;
+  for (const id of ["part-search", "finder-btn", "set-search", "set-filter", "set-qty", "set-add-btn", "sample-btn", "export-btn", "clear-btn"]) $(id).disabled = false;
   restoreFilters();
   await restore();
   renderPieces();
@@ -81,15 +81,19 @@ async function setStatus(text, isError = false) {
 
 // ---------- match data ----------
 
-// Decodes match.bin.gz (format documented in scripts/build_db.py, write_match).
-async function loadMatchData(url, cache = "default") {
+// Fetches a .gz data file, unzipping it unless the server already did.
+async function fetchGzip(url, cache = "default") {
   const res = await fetch(url, { cache });
   if (!res.ok) throw new Error(`${url}: HTTP ${res.status}`);
-  let buf = await res.arrayBuffer();
+  const buf = await res.arrayBuffer();
   const magic = new Uint8Array(buf, 0, 2);
-  if (magic[0] === 0x1f && magic[1] === 0x8b) {
-    buf = await new Response(new Blob([buf]).stream().pipeThrough(new DecompressionStream("gzip"))).arrayBuffer();
-  }
+  if (magic[0] !== 0x1f || magic[1] !== 0x8b) return buf;
+  return new Response(new Blob([buf]).stream().pipeThrough(new DecompressionStream("gzip"))).arrayBuffer();
+}
+
+// Decodes match.bin.gz (format documented in scripts/build_db.py, write_match).
+async function loadMatchData(url, cache = "default") {
+  const buf = await fetchGzip(url, cache);
   const view = new DataView(buf);
   if (new TextDecoder().decode(new Uint8Array(buf, 0, 4)) !== "WCIB") throw new Error(`${url}: not a match file`);
   const headLen = view.getUint32(4, true);
@@ -452,6 +456,191 @@ async function onSetSubmit(e) {
   $("set-search").value = "";
   $("set-qty").value = 1;
   await addSet(s, copies);
+}
+
+// ---------- part finder ----------
+
+// Everyday and Indonesian words for shapes and features, mapped to the words
+// Rebrickable uses in part names. The word itself is always tried too.
+const SYNONYMS = {
+  flat: ["tile"], smooth: ["tile"], thin: ["plate"], slanted: ["slope"], sloped: ["slope"], ramp: ["slope"], roof: ["slope"],
+  circle: ["round"], circular: ["round"], cylinder: ["round", "cylinder"], tube: ["round", "tube"], curve: ["curved"],
+  holes: ["hole"], stick: ["bar"], rod: ["bar"], pole: ["bar"], tire: ["tyre", "tire"], tires: ["tyre", "tire"],
+  triangle: ["wedge", "triangle"], triangular: ["wedge"], corner: ["corner"], person: ["minifig"], figure: ["minifig"],
+  bata: ["brick"], balok: ["brick", "beam"], pelat: ["plate"], plat: ["plate"], tipis: ["plate"], datar: ["tile"], rata: ["tile"],
+  licin: ["tile"], halus: ["tile"], miring: ["slope"], atap: ["slope", "roof"], bulat: ["round"], bundar: ["round"],
+  lingkaran: ["round"], tabung: ["round", "cylinder"], lengkung: ["curved", "arch"], melengkung: ["curved"],
+  lengkungan: ["arch"], lubang: ["hole"], berlubang: ["hole"], roda: ["wheel"], ban: ["tyre", "tire"], jendela: ["window"],
+  pintu: ["door"], kaca: ["glass", "windscreen"], engsel: ["hinge"], kepala: ["head"], badan: ["torso"], kaki: ["legs"],
+  tangan: ["arm", "hand"], lengan: ["arm"], rambut: ["hair"], topi: ["hat", "cap"], helm: ["helmet"], pohon: ["tree"],
+  daun: ["leaf", "plant"], bunga: ["flower"], pagar: ["fence"], tangga: ["ladder", "stairs"], sudut: ["corner"],
+  pojok: ["corner"], segitiga: ["wedge", "triangle"], baji: ["wedge"], kerucut: ["cone"], kubah: ["dome"], poros: ["axle"],
+  gir: ["gear"], roda_gigi: ["gear"], sambungan: ["connector"], penghubung: ["connector"], pasak: ["pin"], tongkat: ["bar"],
+  batang: ["bar", "beam"], piring: ["dish"], parabola: ["dish"], kotak: ["box", "container"], senjata: ["weapon"],
+  pedang: ["sword"], tameng: ["shield"], perisai: ["shield"], hewan: ["animal"], binatang: ["animal"], stiker: ["sticker"],
+  setir: ["steering"], kemudi: ["steering"], baling: ["propeller"], sayap: ["wing"], ekor: ["tail"], panel: ["panel"],
+  pegangan: ["handle", "bar"], klip: ["clip"], penjepit: ["clip"], tonjolan: ["stud"], dasar: ["baseplate"],
+};
+const STOP_WORDS = new Set(("a an the with and of on in for piece pieces part parts lego bit small big large long short " +
+  "dengan dan yang di pada ada untuk sebuah buah keping kepingan potong bagian kecil besar panjang pendek seperti").split(" "));
+// Indonesian and everyday color words, mapped to Rebrickable color names.
+const COLOR_WORDS = {
+  merah: "Red", biru: "Blue", kuning: "Yellow", hijau: "Green", hitam: "Black", putih: "White", gray: "Light Bluish Gray",
+  grey: "Light Bluish Gray", abu: "Light Bluish Gray", "abu-abu": "Light Bluish Gray", "dark gray": "Dark Bluish Gray",
+  "dark grey": "Dark Bluish Gray", "abu tua": "Dark Bluish Gray", "abu-abu tua": "Dark Bluish Gray", brown: "Reddish Brown",
+  coklat: "Reddish Brown", cokelat: "Reddish Brown", "coklat tua": "Dark Brown", "cokelat tua": "Dark Brown", oranye: "Orange",
+  jingga: "Orange", krem: "Tan", beige: "Tan", emas: "Pearl Gold", gold: "Pearl Gold", perak: "Flat Silver",
+  silver: "Flat Silver", ungu: "Dark Purple", purple: "Dark Purple", pink: "Bright Pink", "merah muda": "Bright Pink",
+  bening: "Trans-Clear", transparan: "Trans-Clear", clear: "Trans-Clear", transparent: "Trans-Clear", "biru tua": "Dark Blue",
+  "biru muda": "Medium Azure", "hijau tua": "Dark Green", "hijau muda": "Lime", "merah tua": "Dark Red",
+  "kuning muda": "Bright Light Yellow", "light gray": "Light Bluish Gray", "light grey": "Light Bluish Gray",
+};
+const SIZE_RE = /(\d+(?:[.,]\d+)?)\s*(?:x|×|by|kali)\s*(\d+(?:[.,]\d+)?)(?:\s*(?:x|×|by|kali)\s*(\d+(?:[.,]\d+)?))?/;
+const STUDS_RE = /(\d+)\s*(?:studs?|tonjolan|bintil|titik|dots?)\b/;
+const HOLES_RE = /(\d+)\s*(?:holes?|lubang)\b/;
+const NAME_SIZE_RE = /(\d+(?:\.\d+)?) x (\d+(?:\.\d+)?)(?: x (\d+(?:\.\d+)?))?/;
+
+let catalog;
+let finderLimit = 48;
+
+// "2 x 4" or "4 x 2 x 3" -> footprint [2, 4] (smaller side first), then height if given.
+function sizeOf(m) {
+  const [a, b, h] = m.slice(1, 4).map((n) => (n == null ? null : Number(n.replace(",", "."))));
+  return h == null ? [Math.min(a, b), Math.max(a, b)] : [Math.min(a, b), Math.max(a, b), h];
+}
+
+function loadCatalog() {
+  catalog ??= fetchGzip(new URL("data/parts.json.gz", location.href).href).then((buf) => {
+    const data = JSON.parse(new TextDecoder().decode(buf));
+    const categories = new Map(data.categories);
+    const parts = data.parts.map(([pid, part_num, name, cat_id, in_sets, img]) => {
+      const size = name.match(NAME_SIZE_RE);
+      return { pid, part_num, name, cat_id, in_sets, img, lower: name.toLowerCase(), size: size ? sizeOf(size) : null };
+    });
+    const sel = $("finder-cat");
+    const counts = new Map();
+    for (const p of parts) counts.set(p.cat_id, (counts.get(p.cat_id) || 0) + 1);
+    sel.innerHTML = `<option value="">All categories</option>` + [...counts]
+      .map(([id, n]) => [categories.get(id) ?? "Other", id, n])
+      .sort((a, b) => a[0].localeCompare(b[0]))
+      .map(([name, id, n]) => `<option value="${id}">${esc(name)} (${fmt(n)})</option>`).join("");
+    return { parts, categories };
+  });
+  return catalog;
+}
+
+// Color phrases, longest first so "dark blue" wins over "blue".
+let colorPhrases;
+function findColor(text) {
+  colorPhrases ??= [
+    ...[...colors.values()].flatMap((c) => [[c.name.toLowerCase(), c.id], [c.name.toLowerCase().replace(/-/g, " "), c.id]]),
+    ...Object.entries(COLOR_WORDS).map(([w, name]) => [w, [...colors.values()].find((c) => c.name === name)?.id]),
+  ].filter(([w, id]) => id != null && !w.startsWith("[")).sort((a, b) => b[0].length - a[0].length);
+  for (const [phrase, id] of colorPhrases) {
+    const re = new RegExp(`(^|[^\\p{L}])${phrase.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?![\\p{L}])`, "u");
+    if (re.test(text)) return { id, rest: text.replace(re, "$1 ") };
+  }
+  return { id: null, rest: text };
+}
+
+// Splits a description into color, size, stud count and word groups; each
+// group is a list of alternatives, any of which may appear in a part name.
+function parseDescription(text) {
+  let rest = ` ${text.toLowerCase()} `;
+  const color = findColor(rest);
+  rest = color.rest;
+  let size = null, studs = null;
+  const sm = rest.match(SIZE_RE);
+  if (sm) { size = sizeOf(sm); rest = rest.replace(sm[0], " "); }
+  const st = rest.match(STUDS_RE);
+  if (st) { studs = Number(st[1]); rest = rest.replace(st[0], " "); }
+  // Technic beams are named by length: "7 holes" means 1 x 7.
+  let holes = null;
+  const ho = rest.match(HOLES_RE);
+  if (ho && !size && Number(ho[1]) > 1) { holes = Number(ho[1]); rest = rest.replace(ho[0], " "); }
+  rest = rest.replace(/roda gigi/g, "roda_gigi");
+  const words = rest.split(/[^\p{L}\p{N}_°]+/u).filter((w) => w && !STOP_WORDS.has(w));
+  const groups = words.map((w) => {
+    const alts = new Set([w, ...(SYNONYMS[w] || [])]);
+    if (w.length > 3 && w.endsWith("s")) alts.add(w.slice(0, -1));
+    return { word: w, alts: [...alts] };
+  });
+  return { color: color.id, size, studs, holes, groups };
+}
+
+const colorAvailable = (m, pid, color) => m.keys[lowerBound(m.keys, matchKey(pid, color))] === matchKey(pid, color);
+
+async function runFinder() {
+  const { parts, categories } = await loadCatalog();
+  const m = await matchData;
+  const q = parseDescription($("finder-text").value);
+  const cat = $("finder-cat").value === "" ? null : Number($("finder-cat").value);
+  // Words no part name contains (e.g. untranslated ones) are ignored.
+  const known = q.groups.filter((g) => parts.some((p) => g.alts.some((a) => p.lower.includes(a))));
+  const ignored = q.groups.filter((g) => !known.includes(g));
+  const scored = [];
+  for (const p of parts) {
+    if (cat != null && p.cat_id !== cat) continue;
+    // Two numbers match the footprint, so "1 x 2" also finds "Brick 1 x 2 x 3".
+    if (q.size && (!p.size || q.size.some((n, i) => n !== p.size[i]))) continue;
+    if (q.studs && (!p.size || p.size[0] * p.size[1] !== q.studs)) continue;
+    if (q.holes && (!p.size || !p.size.slice(0, 2).includes(q.holes))) continue;
+    if (q.color != null && !colorAvailable(m, p.pid, q.color)) continue;
+    let score = 0, weight = p.in_sets;
+    for (const g of known) {
+      if (g.alts.some((a) => p.lower.includes(a))) score++;
+      // A part named after the word ("Wheel …" for "wheel") counts double.
+      if (g.alts.some((a) => p.lower.startsWith(a))) weight = p.in_sets * 2;
+    }
+    if (known.length && !score) continue;
+    scored.push({ p, score, weight });
+  }
+  scored.sort((a, b) => b.score - a.score || b.weight - a.weight);
+  const exact = scored.filter((r) => r.score === known.length);
+  const list = exact.length ? exact : scored;
+
+  const bits = [];
+  if (q.color != null) bits.push(`color <b>${esc(colors.get(q.color)?.name)}</b>`);
+  if (q.size) bits.push(`size <b>${q.size.join(" × ")}</b>`);
+  if (q.studs) bits.push(`<b>${q.studs}</b> studs`);
+  if (q.holes) bits.push(`<b>${q.holes}</b> holes long`);
+  for (const g of known) bits.push(`<b>${esc(g.word)}</b>${g.alts.length > 1 ? ` (${esc(g.alts.filter((a) => a !== g.word).join(" / "))})` : ""}`);
+  let parsed = bits.length ? `Looking for ${bits.join(" · ")}` : "Showing the most common parts.";
+  if (ignored.length) parsed += ` · ignored ${ignored.map((g) => `“${esc(g.word)}”`).join(", ")}`;
+  if (!exact.length && known.length > 1 && list.length) parsed += " · no part matches every word, so these are the closest";
+  $("finder-parsed").innerHTML = parsed;
+
+  const shown = list.slice(0, finderLimit);
+  $("finder-grid").innerHTML = shown.map(({ p }, i) => `<li><button type="button" data-i="${i}">
+      ${p.img ? `<img src="${IMG + esc(p.img)}" alt="" loading="lazy" onerror="this.style.visibility='hidden'">` : `<span class="noimg"></span>`}
+      <strong>${esc(p.part_num)}</strong><span>${esc(p.name)}</span>
+      <span class="meta">${esc(categories.get(p.cat_id) ?? "")} · in ${fmt(p.in_sets)} sets</span></button></li>`).join("")
+    || `<li class="empty">No parts match. Try fewer or different words, or another category.</li>`;
+  $("finder-grid")._items = shown.map(({ p }) => ({ ...p, color_id: q.color ?? undefined }));
+  $("finder-more-row").hidden = !list.length;
+  $("finder-count").textContent = `Showing ${fmt(shown.length)} of ${fmt(list.length)} parts`;
+  $("finder-more").hidden = shown.length >= list.length;
+}
+
+let finderTimer;
+function scheduleFinder() {
+  clearTimeout(finderTimer);
+  finderTimer = setTimeout(() => {
+    finderLimit = 48;
+    runFinder();
+  }, 150);
+}
+
+function openFinder() {
+  const text = $("part-search").value.trim();
+  if (text) $("finder-text").value = text;
+  $("finder-dialog").showModal();
+  $("finder-text").focus();
+  $("finder-parsed").textContent = "Loading the part list…";
+  runFinder().catch((err) => {
+    console.error(err);
+    $("finder-parsed").textContent = "Could not load the part list (data/parts.json.gz).";
+  });
 }
 
 // ---------- collection list ----------
@@ -821,6 +1010,22 @@ $("set-search").addEventListener("input", (e) => {
   setSearchTimer = setTimeout(() => searchSets(e.target.value), 150);
 });
 $("set-form").addEventListener("submit", onSetSubmit);
+$("finder-btn").addEventListener("click", openFinder);
+$("finder-text").addEventListener("input", scheduleFinder);
+$("finder-cat").addEventListener("change", scheduleFinder);
+$("finder-more").addEventListener("click", () => {
+  finderLimit += 48;
+  runFinder();
+});
+$("finder-grid").addEventListener("click", (e) => {
+  const btn = e.target.closest("button[data-i]");
+  if (!btn) return;
+  $("finder-dialog").close();
+  pick($("finder-grid")._items[Number(btn.dataset.i)]);
+});
+$("finder-dialog").addEventListener("click", (e) => {
+  if (e.target === e.currentTarget) e.currentTarget.close();
+});
 $("add-form").addEventListener("submit", addPicked);
 $("pieces").addEventListener("change", onPiecesInput);
 $("pieces").addEventListener("click", onPiecesClick);
