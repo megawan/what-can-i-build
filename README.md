@@ -6,8 +6,9 @@ Live at **https://megawan.github.io/what-can-i-build/**
 
 ## How it works
 
-- `scripts/build_db.py` downloads Rebrickable's CSV dumps and builds one compact SQLite database (about 55 MB): mold variants are folded into one part, minifig parts are counted in the sets that include them, and spare parts are dropped. The file is split into 10 MB chunks under `web/data/`.
+- `scripts/build_db.py` downloads Rebrickable's CSV dumps and builds one compact SQLite database (about 37 MB): mold variants are folded into one part, minifig parts are counted in the sets that include them, and spare parts are dropped. The file is split into 10 MB chunks under `web/data/`.
 - `web/` is a static page. It queries the database in the browser with [sql.js-httpvfs](https://github.com/phiresky/sql.js-httpvfs), which fetches only the pages each query needs over HTTP Range requests, so no backend is required.
+- The same script writes `web/data/match.bin.gz` (about 2.6 MB): every set's parts packed by part and color, plus the set list and the sample collection. The page downloads it once at startup and matches in memory, which takes a few milliseconds instead of hundreds of range requests.
 - Matching: for every set, `coverage = Σ min(have, need) / Σ need` over its parts, matched by part and color (or by part only, with **Ignore colors**).
 - Your piece list is kept in the browser's `localStorage`. Use **Export** to keep a copy; the CSV (`Part,Color,Quantity`, Rebrickable IDs) can be imported again here or on Rebrickable.
 

@@ -1,8 +1,12 @@
-// What Can I Build? — matches a collection of loose parts against every set,
-// querying a static SQLite database through sql.js-httpvfs (HTTP range requests).
+// What Can I Build? — matches a collection of loose parts against every set.
+// Matching runs in memory on data/match.bin.gz (every set's parts, downloaded
+// once); search and set details query a static SQLite database through
+// sql.js-httpvfs (HTTP range requests).
 
 const IMG = "https://cdn.rebrickable.com/media/";
 const STORE_KEY = "wcib.collection.v1";
+// Resolved collection rows, valid only for the database build they came from.
+const RESOLVED_KEY = "wcib.resolved.v1";
 const MAX_RESULTS = 60;
 
 const $ = (id) => document.getElementById(id);
@@ -12,6 +16,9 @@ const fmt = (n) => n.toLocaleString("en-US");
 let db;
 let api;
 let totalSets = 0;
+let builtAt = "";
+// Set until match.bin.gz is loaded; resolves to the decoded match data.
+let matchData;
 const colors = new Map();
 const themes = new Map();
 // key "pid:color" -> { pid, part_num, name, color_id, qty, img }
@@ -24,6 +31,8 @@ const keyOf = (pid, color) => `${pid}:${color}`;
 
 async function init() {
   const base = new URL(".", location.href);
+  const matchUrl = new URL("data/match.bin.gz", base).href;
+  matchData = loadMatchData(matchUrl);
   try {
     const worker = await createDbWorker(
       [{ from: "jsonconfig", configUrl: new URL("data/config.json", base).href }],
@@ -36,6 +45,10 @@ async function init() {
     for (const t of await query("SELECT id, name, parent_id FROM themes")) themes.set(t.id, t);
     const meta = Object.fromEntries((await query("SELECT key, value FROM meta")).map((r) => [r.key, r.value]));
     totalSets = Number(meta.sets || 0);
+    builtAt = meta.built_at || "";
+    // A cached match file from an older build would point at the wrong ids.
+    matchData = matchData.then((m) => (m.builtAt === builtAt ? m : loadMatchData(matchUrl, "reload")));
+    matchData.catch(console.error);
     if (meta.built_at) $("built-at").textContent = `, updated ${meta.built_at.slice(0, 10)}`;
   } catch (err) {
     console.error(err);
@@ -64,17 +77,115 @@ async function setStatus(text, isError = false) {
   el.textContent = text + fetched;
 }
 
+// ---------- match data ----------
+
+// Decodes match.bin.gz (format documented in scripts/build_db.py, write_match).
+async function loadMatchData(url, cache = "default") {
+  const res = await fetch(url, { cache });
+  if (!res.ok) throw new Error(`${url}: HTTP ${res.status}`);
+  let buf = await res.arrayBuffer();
+  const magic = new Uint8Array(buf, 0, 2);
+  if (magic[0] === 0x1f && magic[1] === 0x8b) {
+    buf = await new Response(new Blob([buf]).stream().pipeThrough(new DecompressionStream("gzip"))).arrayBuffer();
+  }
+  const view = new DataView(buf);
+  if (new TextDecoder().decode(new Uint8Array(buf, 0, 4)) !== "WCIB") throw new Error(`${url}: not a match file`);
+  const headLen = view.getUint32(4, true);
+  const head = JSON.parse(new TextDecoder().decode(new Uint8Array(buf, 8, headLen)));
+  const G = head.groups, E = head.entries;
+  let off = 8 + headLen;
+  const keys = new Uint32Array(buf, off, G); off += 4 * G;
+  const counts = new Uint16Array(buf, off, G); off += 2 * G;
+  const sids = new Uint16Array(buf, off, E); off += 2 * E;
+  const qtys = new Uint16Array(buf, off, E);
+  const starts = new Uint32Array(G + 1);
+  for (let g = 0, key = 0, e = 0; g < G; g++) {
+    keys[g] = key += keys[g];
+    starts[g] = e;
+    for (let end = e + counts[g], sid = 0; e < end; e++) sids[e] = sid += sids[e];
+    starts[g + 1] = e;
+  }
+  const sets = head.sets.map(([set_num, name, year, theme_id, total], i) => ({ sid: i + 1, set_num, name, year, theme_id, total }));
+  const sample = head.sample.map(([pid, part_num, name, color_id, qty, img]) => ({ pid, part_num, name, color_id, qty, img }));
+  return { builtAt: head.built_at, keys, starts, sids, qtys, sets, sample };
+}
+
+// match.bin keys are pid << 14 | (color_id + 1).
+const matchKey = (pid, color) => pid * 16384 + color + 1;
+
+// Index of the first group whose key is >= key.
+function lowerBound(keys, key) {
+  let lo = 0, hi = keys.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >>> 1;
+    if (keys[mid] < key) lo = mid + 1;
+    else hi = mid;
+  }
+  return lo;
+}
+
+// Calls fn(group, color_id) for every color the part comes in.
+function forEachColor(m, pid, fn) {
+  const end = matchKey(pid + 1, -1);
+  for (let g = lowerBound(m.keys, matchKey(pid, -1)); g < m.keys.length && m.keys[g] < end; g++) fn(g, (m.keys[g] & 16383) - 1);
+}
+
+// For every set, how many of its pieces the collection covers: by part and
+// color, or with anyColor by part only, so all colors of a part pool together.
+function coverage(m, anyColor) {
+  const got = new Int32Array(m.sets.length + 1);
+  if (!anyColor) {
+    for (const p of collection.values()) {
+      const g = lowerBound(m.keys, matchKey(p.pid, p.color_id));
+      if (m.keys[g] !== matchKey(p.pid, p.color_id)) continue;
+      for (let e = m.starts[g]; e < m.starts[g + 1]; e++) got[m.sids[e]] += Math.min(m.qtys[e], p.qty);
+    }
+    return got;
+  }
+  const have = new Map();
+  for (const p of collection.values()) have.set(p.pid, (have.get(p.pid) || 0) + p.qty);
+  const need = new Int32Array(m.sets.length + 1);
+  const touched = [];
+  for (const [pid, qty] of have) {
+    forEachColor(m, pid, (g) => {
+      for (let e = m.starts[g]; e < m.starts[g + 1]; e++) {
+        const sid = m.sids[e];
+        if (!need[sid]) touched.push(sid);
+        need[sid] += m.qtys[e];
+      }
+    });
+    for (const sid of touched) {
+      got[sid] += Math.min(need[sid], qty);
+      need[sid] = 0;
+    }
+    touched.length = 0;
+  }
+  return got;
+}
+
 // ---------- collection persistence ----------
 
 function save() {
-  const rows = [...collection.values()].map((p) => [p.part_num, p.color_id, p.qty]);
-  try { localStorage.setItem(STORE_KEY, JSON.stringify(rows)); } catch {}
+  const items = [...collection.values()];
+  try {
+    localStorage.setItem(STORE_KEY, JSON.stringify(items.map((p) => [p.part_num, p.color_id, p.qty])));
+    localStorage.setItem(RESOLVED_KEY, JSON.stringify({ built_at: builtAt, items }));
+  } catch {}
 }
 
 async function restore() {
   let rows = [];
-  try { rows = JSON.parse(localStorage.getItem(STORE_KEY) || "[]"); } catch {}
-  if (rows.length) await addRows(rows, { replace: true });
+  let resolved;
+  try {
+    rows = JSON.parse(localStorage.getItem(STORE_KEY) || "[]");
+    resolved = JSON.parse(localStorage.getItem(RESOLVED_KEY) || "null");
+  } catch {}
+  // Same build: reuse the resolved rows instead of looking every part up again.
+  if (resolved?.built_at === builtAt && resolved.items?.length === rows.length) {
+    for (const p of resolved.items) collection.set(keyOf(p.pid, p.color_id), p);
+  } else if (rows.length) {
+    await addRows(rows, { replace: true });
+  }
 }
 
 // Resolve [[part_num, color_id, qty], ...] (any part number, including mold
@@ -189,8 +300,10 @@ async function pick(item) {
   $("picked-num").textContent = item.part_num;
   $("picked-name").textContent = item.name;
 
-  const used = await query(
-    "SELECT color_id, count(*) AS n FROM set_parts WHERE pid = ? GROUP BY color_id ORDER BY n DESC", [item.pid]);
+  const m = await matchData;
+  const used = [];
+  forEachColor(m, item.pid, (g, color_id) => used.push({ color_id, n: m.starts[g + 1] - m.starts[g] }));
+  used.sort((a, b) => b.n - a.n);
   const sel = $("color-select");
   const options = used.map((u) => u.color_id);
   if (item.color_id != null && !options.includes(item.color_id)) options.unshift(item.color_id);
@@ -294,40 +407,32 @@ function anyColor() { return $("any-color").checked; }
 
 async function refreshResults() {
   const seq = ++resultsSeq;
-  // Sorted by pid so the index is read front to back and read-ahead covers
-  // neighbouring parts (pids are assigned most-used first).
-  const have = [...collection.values()]
-    .sort((a, b) => a.pid - b.pid || a.color_id - b.color_id)
-    .map((p) => [p.pid, p.color_id, p.qty]);
-  if (!have.length) {
+  if (!collection.size) {
     lastResults = [];
     renderResults();
     setStatus(`${fmt(totalSets)} sets`);
     return;
   }
-  setStatus("Matching…");
-  const matched = anyColor()
-    ? `h(pid, qty) AS (SELECT json_extract(value, '$[0]'), sum(json_extract(value, '$[2]')) FROM json_each(?1) GROUP BY 1),
-       n AS (SELECT sp.sid, sum(sp.qty) AS need, h.qty AS have
-             FROM h CROSS JOIN set_parts sp ON sp.pid = h.pid GROUP BY sp.sid, h.pid),
-       m AS (SELECT sid, sum(min(need, have)) AS got FROM n GROUP BY sid)`
-    : `h(pid, color_id, qty) AS (SELECT json_extract(value, '$[0]'), json_extract(value, '$[1]'), json_extract(value, '$[2]') FROM json_each(?1)),
-       m AS (SELECT sp.sid, sum(min(sp.qty, h.qty)) AS got
-             FROM h CROSS JOIN set_parts sp ON sp.pid = h.pid AND sp.color_id = h.color_id GROUP BY sp.sid)`;
+  setStatus("Loading set data…");
   const t0 = performance.now();
-  const rows = await query(
-    `WITH ${matched}
-     SELECT s.sid, s.set_num, s.name, s.year, s.theme_id, s.total, m.got, 1.0 * m.got / s.total AS ratio
-     FROM m CROSS JOIN sets s ON s.sid = m.sid
-     WHERE s.total >= ?2
-     ORDER BY ratio DESC, s.total DESC
-     LIMIT ${MAX_RESULTS}`,
-    [JSON.stringify(have), Number($("min-size").value)],
-  );
+  let m;
+  try {
+    m = await matchData;
+  } catch {
+    setStatus("Could not load the set data (data/match.bin.gz). Run scripts/build_db.py first.", true);
+    return;
+  }
   if (seq !== resultsSeq) return;
-  lastResults = rows;
+  const got = coverage(m, anyColor());
+  const minSize = Number($("min-size").value);
+  const rows = [];
+  for (const s of m.sets) {
+    if (got[s.sid] > 0 && s.total >= minSize) rows.push({ ...s, got: got[s.sid], ratio: got[s.sid] / s.total });
+  }
+  rows.sort((a, b) => b.ratio - a.ratio || b.total - a.total);
+  lastResults = rows.slice(0, MAX_RESULTS);
   renderResults();
-  setStatus(`${fmt(totalSets)} sets checked in ${((performance.now() - t0) / 1000).toFixed(1)} s`);
+  setStatus(`${fmt(totalSets)} sets checked in ${((performance.now() - t0) / 1000).toFixed(2)} s`);
 }
 
 function themeName(id) {
@@ -370,7 +475,7 @@ async function openSet(r) {
 
   const parts = await query(
     `SELECT sp.pid, p.part_num, p.name, sp.color_id, sp.qty, i.img
-     FROM set_parts sp INDEXED BY set_parts_by_set
+     FROM set_parts sp
      CROSS JOIN parts p ON p.pid = sp.pid
      LEFT JOIN part_imgs i ON i.pid = sp.pid AND i.color_id = sp.color_id
      WHERE sp.sid = ?`, [r.sid]);
@@ -485,12 +590,10 @@ async function importFile(e) {
 }
 
 async function loadSample() {
-  const rows = await query(
-    `SELECT p.part_num, sp.color_id, sp.qty
-     FROM sets s CROSS JOIN set_parts sp INDEXED BY set_parts_by_set ON sp.sid = s.sid
-     CROSS JOIN parts p ON p.pid = sp.pid
-     WHERE s.set_num = '10696-1'`);
-  await addRows(rows.map((r) => [r.part_num, r.color_id, r.qty]), { replace: true });
+  const m = await matchData;
+  collection.clear();
+  for (const p of m.sample) collection.set(keyOf(p.pid, p.color_id), { ...p });
+  save();
   renderPieces();
   await refreshResults();
 }
